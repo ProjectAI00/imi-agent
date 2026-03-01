@@ -210,7 +210,7 @@ enum Commands {
         task_id: String,
         note: Vec<String>,
     },
-    #[command(alias = "add-goal", alias = "ag", about = "Use when: a new initiative, feature, or area of work is being started ('we need to build a dashboard', 'let's add payments'). A goal groups multiple tasks under one outcome.")]
+    #[command(alias = "add-goal", alias = "ag", about = "Use when: a new initiative, area of work, or product direction is being committed to. Goals must trace back to a decision or direction note — if you can't point to one, use imi log first to capture the thinking, then create the goal once it's clear. A goal is a bet: we believe this is worth building. Name it like an outcome, fill in why it matters now, and set success_signal to something observable. Run imi plan first to check it doesn't already exist.")]
     Goal {
         name: String,
         desc: Option<String>,
@@ -267,13 +267,16 @@ enum Commands {
         #[arg(long)]
         verified_by: Option<String>,
     },
-    #[command(alias = "d", about = "Use when: a choice was made ('we're going with postgres'), something is ruled out ('never store raw card numbers'), a feature is being cancelled ('scrap email notifications'), or any direction that should be permanent. Examples: imi decide \"use postgres\" \"simpler ops\" / imi decide \"cancel email feature\" \"not worth it\"")]
+    #[command(alias = "d", about = "Use when: a firm call was made that should be permanent and traceable. Captures the human reasoning behind a direction — not just what was decided but what was ruled out, what assumption it rests on, and what would change it. This is the highest-authority layer in IMI. Goals and tasks must trace back here. Write like a PM who needs this to still make sense in 3 months: be specific, name what was rejected, state the real reason. Bad: imi decide 'use postgres' 'better'. Good: imi decide 'use postgres over mysql' 'team knows it, simpler ops, mysql adds no value here — revisit if we need sharding'.")]
     Decide {
+        /// What was decided AND what was ruled out. Name both sides. Example: 'use postgres over mysql' not just 'use postgres'
         what: String,
+        /// The real reason — the assumption, the trade-off, what would change this decision. Not a one-word justification.
         why: String,
+        /// What else in the codebase or product changes because of this. Example: 'auth design, session handling, all DB queries'
         affects: Option<String>,
     },
-    #[command(alias = "l", about = "Use when: a thought or direction comes up that isn't a firm decision yet ('we should probably rethink onboarding', 'something feels off about the auth flow'). Tentative observations, half-formed ideas, things to revisit. Use decide instead if it's a firm call.")]
+    #[command(alias = "l", about = "Use when: something important came up that isn't a firm decision yet — a direction, an instinct, a concern, something to revisit. Human thinking that should be preserved but isn't ready to be a decision. Captures the reasoning as it evolves. Write it the way you'd explain it to a colleague: what you noticed, why it matters, what you're uncertain about. If it becomes a firm call later, promote it to imi decide. Examples: 'the onboarding flow feels too long — users might drop off before seeing value', 'not sure if we should build this ourselves or use an existing library, leaning toward building'.")]
     Log {
         note: Vec<String>,
     },
