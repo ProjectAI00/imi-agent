@@ -7,8 +7,6 @@ import { existsSync, mkdirSync, chmodSync, unlinkSync, createWriteStream, copyFi
 import { join } from "path";
 import { homedir, tmpdir } from "os";
 import { IncomingMessage } from "http";
-
-import { readFileSync } from "fs";
 const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url).pathname, "utf8")) as { version: string };
 const VERSION: string = pkg.version;
 const REPO = "ProjectAI00/ai-db-imi";
@@ -77,32 +75,52 @@ async function main(): Promise<void> {
 }
 
 function installSkills(): void {
-  // Single canonical SKILL.md — same content installed everywhere
-  const skillSrc = join(import.meta.dir, "skills", "imi", "SKILL.md");
+  const skillsDir = join(import.meta.dir, "skills", "imi");
+  const skillSrc = join(skillsDir, "SKILL.md");
   if (!existsSync(skillSrc)) return;
-  const content = readFileSync(skillSrc, "utf8");
 
-  // All agent CLIs that read skills/rules from home directory
-  const homeTargets: { name: string; dir: string; filename: string }[] = [
-    { name: "GitHub Copilot CLI", dir: join(homedir(), ".copilot", "skills", "imi"),   filename: "SKILL.md" },
-    { name: "Claude Code",        dir: join(homedir(), ".claude",  "skills", "imi"),   filename: "SKILL.md" },
-    { name: "Cursor",             dir: join(homedir(), ".cursor",  "rules"),            filename: "imi.md"   },
-    { name: "Codex / OpenCode",   dir: join(homedir(), ".opencode", "instructions"),   filename: "imi-session.md" },
-    { name: "OpenAI Codex",       dir: join(homedir(), ".codex"),                      filename: "instructions.md" },
+  // Sub-files that accompany SKILL.md in agents that support multi-file skill dirs
+  const subFiles = ["ops-mode.md", "plan-mode.md", "execute-mode.md", "ai-voice.md"];
+
+  // For agents that use a single flat file, concatenate all content
+  const allContent = [skillSrc, ...subFiles.map(f => join(skillsDir, f))]
+    .filter(existsSync)
+    .map(f => readFileSync(f, "utf8"))
+    .join("\n\n---\n\n");
+
+  // Agents that support skill sub-directories: install each file separately
+  const multiFileTargets: { name: string; dir: string }[] = [
+    { name: "GitHub Copilot CLI", dir: join(homedir(), ".copilot", "skills", "imi") },
+    { name: "Claude Code",        dir: join(homedir(), ".claude",  "skills", "imi") },
+  ];
+
+  // Agents that use a single flat file: install concatenated content
+  const singleFileTargets: { name: string; dir: string; filename: string }[] = [
+    { name: "Cursor",           dir: join(homedir(), ".cursor",   "rules"),          filename: "imi.md"          },
+    { name: "Codex / OpenCode", dir: join(homedir(), ".opencode", "instructions"),  filename: "imi-session.md"  },
+    { name: "OpenAI Codex",     dir: join(homedir(), ".codex"),                     filename: "instructions.md" },
   ];
 
   const installed: string[] = [];
   const skipped: string[] = [];
 
-  for (const { name, dir, filename } of homeTargets) {
-    // Only install if the parent agent dir exists (i.e. the agent is installed)
+  for (const { name, dir } of multiFileTargets) {
     const agentRoot = join(dir, "..", "..");
-    if (!existsSync(agentRoot)) {
-      skipped.push(name);
-      continue;
-    }
+    if (!existsSync(agentRoot)) { skipped.push(name); continue; }
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, filename), content);
+    writeFileSync(join(dir, "SKILL.md"), readFileSync(skillSrc, "utf8"));
+    for (const sub of subFiles) {
+      const src = join(skillsDir, sub);
+      if (existsSync(src)) writeFileSync(join(dir, sub), readFileSync(src, "utf8"));
+    }
+    installed.push(name);
+  }
+
+  for (const { name, dir, filename } of singleFileTargets) {
+    const agentRoot = join(dir, "..", "..");
+    if (!existsSync(agentRoot)) { skipped.push(name); continue; }
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, filename), allContent);
     installed.push(name);
   }
 
@@ -115,8 +133,8 @@ function installSkills(): void {
   // .imi/ folder exists — keeps project-level agent instructions in sync
   const cwd = process.cwd();
   if (existsSync(join(cwd, ".imi"))) {
-    writeFileSync(join(cwd, "AGENTS.md"), content);
-    writeFileSync(join(cwd, "CLAUDE.md"), content);
+    writeFileSync(join(cwd, "AGENTS.md"), allContent);
+    writeFileSync(join(cwd, "CLAUDE.md"), allContent);
   }
 
   // Plugin registration
