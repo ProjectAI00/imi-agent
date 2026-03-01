@@ -77,30 +77,31 @@ async function main(): Promise<void> {
 }
 
 function installSkills(): void {
-  // The bundled SKILL.md lives next to this script inside the npm package
+  // Single canonical SKILL.md — same content installed everywhere
   const skillSrc = join(import.meta.dir, "skills", "imi", "SKILL.md");
   if (!existsSync(skillSrc)) return;
+  const content = readFileSync(skillSrc, "utf8");
 
-  // Agent CLIs that follow the open agentskills standard
-  const targets: { name: string; dir: string }[] = [
-    { name: "GitHub Copilot CLI", dir: join(homedir(), ".copilot", "skills", "imi") },
-    { name: "Claude Code",        dir: join(homedir(), ".claude",  "skills", "imi") },
+  // All agent CLIs that read skills/rules from home directory
+  const homeTargets: { name: string; dir: string; filename: string }[] = [
+    { name: "GitHub Copilot CLI", dir: join(homedir(), ".copilot", "skills", "imi"),   filename: "SKILL.md" },
+    { name: "Claude Code",        dir: join(homedir(), ".claude",  "skills", "imi"),   filename: "SKILL.md" },
+    { name: "Cursor",             dir: join(homedir(), ".cursor",  "rules"),            filename: "imi.md"   },
+    { name: "Codex / OpenCode",   dir: join(homedir(), ".opencode", "instructions"),   filename: "imi-session.md" },
   ];
 
   const installed: string[] = [];
   const skipped: string[] = [];
 
-  for (const { name, dir } of targets) {
-    const parentDir = join(dir, "..");          // ~/.copilot/skills or ~/.claude/skills
-    const parentExists = existsSync(join(parentDir, ".."));  // ~/.copilot or ~/.claude
-
-    if (!parentExists) {
+  for (const { name, dir, filename } of homeTargets) {
+    // Only install if the parent agent dir exists (i.e. the agent is installed)
+    const agentRoot = join(dir, "..", "..");
+    if (!existsSync(agentRoot)) {
       skipped.push(name);
       continue;
     }
-
     mkdirSync(dir, { recursive: true });
-    copyFileSync(skillSrc, join(dir, "SKILL.md"));
+    writeFileSync(join(dir, filename), content);
     installed.push(name);
   }
 
@@ -108,8 +109,13 @@ function installSkills(): void {
     console.log(`\nAgent skills installed into: ${installed.join(", ")}`);
     console.log(`Agents will now automatically run imi commands when you mention "imi".`);
   }
-  if (skipped.length > 0) {
-    console.log(`Skipped (not installed): ${skipped.join(", ")}`);
+
+  // Also write AGENTS.md and CLAUDE.md in the current working directory if a
+  // .imi/ folder exists — keeps project-level agent instructions in sync
+  const cwd = process.cwd();
+  if (existsSync(join(cwd, ".imi"))) {
+    writeFileSync(join(cwd, "AGENTS.md"), content);
+    writeFileSync(join(cwd, "CLAUDE.md"), content);
   }
 
   // Plugin registration
