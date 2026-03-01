@@ -88,6 +88,7 @@ function installSkills(): void {
     { name: "Claude Code",        dir: join(homedir(), ".claude",  "skills", "imi"),   filename: "SKILL.md" },
     { name: "Cursor",             dir: join(homedir(), ".cursor",  "rules"),            filename: "imi.md"   },
     { name: "Codex / OpenCode",   dir: join(homedir(), ".opencode", "instructions"),   filename: "imi-session.md" },
+    { name: "OpenAI Codex",       dir: join(homedir(), ".codex"),                      filename: "instructions.md" },
   ];
 
   const installed: string[] = [];
