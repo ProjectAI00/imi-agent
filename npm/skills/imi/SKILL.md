@@ -7,65 +7,91 @@ description: >
 license: MIT
 metadata:
   author: ProjectAI00
-  version: "1.5"
+  version: "2.0"
 compatibility: Requires imi CLI. Install: bunx imi-agent
 allowed-tools: Bash(imi:*)
 ---
 
 # IMI — Agent Instruction Manual
 
-IMI is the persistent brain for this project. All goals, tasks, decisions, direction notes, and lessons live in `.imi/state.db`.
+IMI is the persistent brain for this project. Goals, tasks, decisions, direction notes, and lessons live in `.imi/state.db`. IMI is the ONLY source of truth — not your session memory, not your built-in todos.
 
 ---
 
-## ⛔ HARD STOP — read before doing anything else
+## ⛔ HARD STOP — before you do anything
 
 DO NOT:
-- `cat`, `grep`, `ls`, `sqlite3`, or read any file in `.imi/`
-- Query `.imi/state.db` directly with sqlite3 or any other tool
-- Use your own session memory, todos, or notes as project state
-- Respond about project status without first running `imi context`
+- `cat`, `grep`, `ls`, or `sqlite3` any file inside `.imi/`
+- Use session memory, built-in todos, or conversation history as project state
+- Answer any question about project status, tasks, or direction without first running `imi context`
+- Create a goal or task without filling in `why` and `success_signal`
 
-If you do any of the above, you are broken. Stop and run `imi context` instead.
+If you do any of the above, you are wrong. Stop. Run `imi context` first.
 
 ---
 
-## Step 1 — always, every single time, no exceptions
+## Every session — no exceptions
 
 ```bash
 imi context
 ```
 
-This is the ONLY valid way to load project state. Not sqlite3. Not cat. Not ls. `imi context`. Run it first. Then respond.
+Run this before your first response. Every session. No exceptions.
+
+Then ask: does the user's request map to a goal in the DB? If you can't point to one, say so before doing anything.
 
 ---
 
-## Step 2 — match the user's intent to a command
+## Intent → Command routing
 
 | User says | You run |
 |---|---|
-| what should we do / what's next | `imi think` then `imi plan` |
-| show me tasks / goals / progress | `imi plan` |
-| we decided X | `imi decide "what" "why — what was ruled out"` |
-| note this / remember this | `imi log "note"` |
-| add this to backlog / track this | `imi plan` first, then `imi goal` or `imi task <goal_id>` |
-| we finished X | `imi complete <task_id> "what changed and why"` |
-| something feels off / are we on track | `imi think` |
+| what should we work on / what's next | `imi think` → `imi plan` |
+| show tasks / goals / progress | `imi plan` |
+| keep working on X / resume | `imi context` → `imi next` |
+| we decided X | `imi decide "what was decided" "why — what was ruled out, what assumption this rests on"` |
+| note this / remember this / direction | `imi log "note"` |
+| add to backlog / new initiative | `imi plan` first (check it doesn't exist), then `imi goal "<name>" "<desc>" <priority> "<why>" "<for_who>" "<success_signal>"` |
+| add a task to a goal | `imi context` first for the goal ID, then `imi task <goal_id> "<title>" --why "<reason>" --acceptance-criteria "<what done looks like>"` |
+| we finished X | `imi complete <task_id> "what was built, what changed, why, and where understanding may have drifted"` |
+| something feels off / are we aligned | `imi think` |
+| agent made a mistake / fix repeated error | `imi mlesson "what went wrong and what to do instead"` |
+| cancel / scrap a feature | `imi decide "Cancel <feature>" "<why>"` → `imi delete <id>` |
 
 ---
 
-## Step 3 — finishing work
+## Creating goals — always fill every field
 
 ```bash
-imi complete <task_id> "what was built, what changed, and why"
+imi goal "<name>" "<description>" <priority> "<why it matters now>" "<who this is for>" "<observable success signal>"
 ```
 
-Always. Every task. No exceptions. This is how context survives across sessions.
+**Never create a goal without `why` and `success_signal`.** A goal with empty fields is noise — it gives agents nothing to act on and nothing to verify against.
 
-If you repeated a mistake or needed correction:
+Example:
 ```bash
-imi mlesson "what went wrong and what to do instead"
+imi goal "multi-agent-consequence" "One orchestrator + sub-agents per unit, decisions have downstream effects on sibling agents" 1 "Core research hypothesis — proves consequence propagation works before scaling to startup sim" "research" "Two agents playing a game where unit death measurably changes sibling agent strategy within the same game"
 ```
+
+---
+
+## Creating tasks — always fill every field
+
+```bash
+imi task <goal_id> "<title>" --why "<why this unblocks the goal>" --acceptance-criteria "<exactly what done looks like>" --relevant-files "<files to touch>"
+```
+
+**Thin tasks = agents guess. Rich tasks = agents deliver.**
+
+---
+
+## Finishing work — never skip this
+
+```bash
+imi complete <task_id> "what was built, what changed, how you interpreted the intent, what you were uncertain about"
+```
+
+The summary is not just what was done — it is how you understood the task and where your interpretation might have drifted. This is what the next agent needs.
 
 ---
 

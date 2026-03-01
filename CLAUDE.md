@@ -1,88 +1,104 @@
-# IMI CLI — AI Agent Instructions
+---
+name: imi
+description: >
+  Activate when: the project has a .imi/ directory, or the user asks about
+  what to build, what's next, tasks, goals, decisions, progress, or where we
+  left off. Always run `imi context` before responding. Install if missing: bunx imi-agent
+license: MIT
+metadata:
+  author: ProjectAI00
+  version: "2.0"
+compatibility: Requires imi CLI. Install: bunx imi-agent
+allowed-tools: Bash(imi:*)
+---
 
-This repo IS the IMI CLI. You are working on the tool that agents use to persist goals, tasks, and memory across sessions.
+# IMI — Agent Instruction Manual
 
-## ⚠️ Critical Architecture Note
+IMI is the persistent brain for this project. Goals, tasks, decisions, direction notes, and lessons live in `.imi/state.db`. IMI is the ONLY source of truth — not your session memory, not your built-in todos.
 
-**IMI does not call execution tools. Execution tools plug into IMI.**
+---
 
-Tools like Hankweave, Entire, Claude Code, Codex, Cursor are execution-layer details. IMI is the state layer above all of them. Any agent using any execution tool reads context from IMI before starting and writes results back when done. IMI doesn't care HOW work was done, only WHAT was done and WHAT was learned.
+## ⛔ HARD STOP — before you do anything
 
-Never couple IMI to a specific execution tool. That creates lock-in.
+DO NOT:
+- `cat`, `grep`, `ls`, or `sqlite3` any file inside `.imi/`
+- Use session memory, built-in todos, or conversation history as project state
+- Answer any question about project status, tasks, or direction without first running `imi context`
+- Create a goal or task without filling in `why` and `success_signal`
 
-```
-IMI                →  ops layer      (goals, tasks, memory — across all sessions, users, agents)
-Execution tools    →  run layer      (hankweave, claude code, codex — HOW work gets done)
-Session tools      →  session layer  (entire — records what happened, enables rewind)
-```
+If you do any of the above, you are wrong. Stop. Run `imi context` first.
 
-## What IMI Is
+---
 
-IMI is a persistent state engine for AI agents. It's a SQLite DB + bash CLI that any agent (Claude Code, Copilot, Cursor, Codex) can read from and write to. It solves the stateless agent problem: every session starts knowing what to build, why, and what was already learned.
-
-## ⚠️ Mandatory Session Contract — No Exceptions
-
-**Before you respond to anything, before you write a single line of code, before you answer a single question — run this:**
-
-```bash
-./imi status          # Full goals + task state across all sessions
-./imi audit           # Which done tasks have no verification — catch drift immediately
-```
-
-Then reason from what you read:
-- What goal does the user's request actually map to?
-- Is this work already in the DB (done, in progress, or todo)?
-- Does doing this contradict any recorded decision?
-- Is this the highest-priority unblocked task, or are we drifting?
-
-If you can't map the request to a goal in the DB, say so before doing anything. Do not answer from conversation memory. The DB is the source of truth across all sessions — your context window is not.
-
-## When Working on a Task
+## Every session — no exceptions
 
 ```bash
-./imi next --toon     # Atomically claim highest-priority task + get full context
-./imi ping <id>       # Heartbeat every 10min to keep task locked
-./imi complete <id> "what you did"   # Mark done, store summary as memory
-./imi fail <id> "why it's blocked"   # Release lock, store failure for next agent
+imi context
 ```
 
-## When Adding Goals/Tasks
+Run this before your first response. Every session. No exceptions.
 
-Before adding anything, check if it already exists: `./imi status` and scan the task list. If it exists and is marked done, run `./imi verify <id>` to check if it was actually done. Do not add duplicate tasks.
+Then ask: does the user's request map to a goal in the DB? If you can't point to one, say so before doing anything.
+
+---
+
+## Intent → Command routing
+
+| User says | You run |
+|---|---|
+| what should we work on / what's next | `imi think` → `imi plan` |
+| show tasks / goals / progress | `imi plan` |
+| keep working on X / resume | `imi context` → `imi next` |
+| we decided X | `imi decide "what was decided" "why — what was ruled out, what assumption this rests on"` |
+| note this / remember this / direction | `imi log "note"` |
+| add to backlog / new initiative | `imi plan` first (check it doesn't exist), then `imi goal "<name>" "<desc>" <priority> "<why>" "<for_who>" "<success_signal>"` |
+| add a task to a goal | `imi context` first for the goal ID, then `imi task <goal_id> "<title>" --why "<reason>" --acceptance-criteria "<what done looks like>"` |
+| we finished X | `imi complete <task_id> "what was built, what changed, why, and where understanding may have drifted"` |
+| something feels off / are we aligned | `imi think` |
+| agent made a mistake / fix repeated error | `imi mlesson "what went wrong and what to do instead"` |
+| cancel / scrap a feature | `imi decide "Cancel <feature>" "<why>"` → `imi delete <id>` |
+
+---
+
+## Creating goals — always fill every field
 
 ```bash
-./imi add-goal <name> [desc] [priority] [why] [for_who] [success_criteria]
-./imi add-task <goal_id> <title> [desc] [priority] [why]
-./imi log "insight or direction note"
-./imi decide "what" "why" [affects]
+imi goal "<name>" "<description>" <priority> "<why it matters now>" "<who this is for>" "<observable success signal>"
 ```
 
-## Running Tasks with Hankweave
+**Never create a goal without `why` and `success_signal`.** A goal with empty fields is noise — it gives agents nothing to act on and nothing to verify against.
+
+Example:
+```bash
+imi goal "multi-agent-consequence" "One orchestrator + sub-agents per unit, decisions have downstream effects on sibling agents" 1 "Core research hypothesis — proves consequence propagation works before scaling to startup sim" "research" "Two agents playing a game where unit death measurably changes sibling agent strategy within the same game"
+```
+
+---
+
+## Creating tasks — always fill every field
 
 ```bash
-./imi run <task_id> [model]   # Generates hank.json from task context + fires hankweave
+imi task <goal_id> "<title>" --why "<why this unblocks the goal>" --acceptance-criteria "<exactly what done looks like>" --relevant-files "<files to touch>"
 ```
 
-This uses `prompts/execute-mode.md` as the system prompt. The agent writes `summary.md` when done.
+**Thin tasks = agents guess. Rich tasks = agents deliver.**
 
-## Repo Structure
+---
 
-```
-imi              → the CLI bash script (source of truth)
-prompts/
-  plan-mode.md   → system prompt for planning agents (discovers codebase, creates rich tasks)
-  execute-mode.md → system prompt for executing agents (injected into imi run)
-.imi/
-  state.db       → SQLite DB (goals, tasks, memories, decisions)
-  runs/          → hankweave execution dirs per task
+## Finishing work — never skip this
+
+```bash
+imi complete <task_id> "what was built, what changed, how you interpreted the intent, what you were uncertain about"
 ```
 
-## The Goal
+The summary is not just what was done — it is how you understood the task and where your interpretation might have drifted. This is what the next agent needs.
 
-Make the `plan → execute → writeback` loop work so well that each agent session compounds on the last. An agent should be able to run `./imi next --toon` and have everything it needs to start work immediately — no re-briefing, no guessing.
+---
 
-## Key Principles
+## If imi is not installed
 
-- **Fields that matter on a task:** `acceptance_criteria`, `relevant_files`, `workspace_path`, `tools` — always fill these when creating tasks
-- **Every task ends with `./imi complete`** — this is how context accumulates
-- **Thin tasks = agents guess. Rich tasks = agents deliver.**
+```bash
+bunx imi-agent
+```
+
+Then re-run `imi context`.
