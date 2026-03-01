@@ -117,7 +117,12 @@ jobs:
           VERSION=${GITHUB_REF_NAME#v}
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Save the version-bumped file, then jump to latest main to avoid
+          # rebase conflicts when the tag's base commit is already in main history
+          cp npm/package.json /tmp/npm-package.json
+          git fetch origin main
+          git checkout origin/main -B main
+          cp /tmp/npm-package.json npm/package.json
           git add npm/package.json
           git diff --cached --quiet || git commit -m "chore: sync npm/package.json to v${VERSION} [skip ci]"
-          git pull --rebase origin main
-          git push origin HEAD:main
+          git push origin main
