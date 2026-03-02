@@ -66,6 +66,32 @@ async function main(): Promise<void> {
   unlinkSync(tmp);
   console.log("done");
 
+  // Install hankweave (execution engine)
+  try {
+    execSync("hankweave --version 2>/dev/null || bunx hankweave --version 2>/dev/null", { stdio: "pipe" });
+  } catch {
+    process.stdout.write("Installing hankweave... ");
+    try {
+      execSync("npm install -g hankweave", { stdio: "pipe" });
+      console.log("done");
+    } catch {
+      console.log("skipped (install manually: npm install -g hankweave)");
+    }
+  }
+
+  // Install entire (commit tracking + session verification)
+  try {
+    execSync("entire version", { stdio: "pipe" });
+  } catch {
+    process.stdout.write("Installing entire... ");
+    try {
+      execSync("curl -fsSL https://entire.io/install.sh | bash", { stdio: "pipe", shell: true });
+      console.log("done");
+    } catch {
+      console.log("skipped (install manually: curl -fsSL https://entire.io/install.sh | bash)");
+    }
+  }
+
   const inPath = (process.env.PATH || "").split(":").includes(BIN_DIR);
   if (!inPath) {
     console.log(`\nAdd to your shell config:\n  export PATH="$HOME/.local/bin:$PATH"\n`);
