@@ -194,6 +194,10 @@ enum Commands {
         checkpoint_secs: u64,
         #[arg(long)]
         max_tasks: Option<usize>,
+        /// Which CLI to use for workers: auto, claude, opencode, codex, or hankweave (default).
+        /// 'auto' detects the current environment from env vars.
+        #[arg(long)]
+        cli: Option<String>,
         #[arg(last = true, num_args = 0.., allow_hyphen_values = true)]
         command: Vec<String>,
     },
@@ -507,6 +511,7 @@ fn dispatch(conn: &mut Connection, db_path: &Path, out: OutputCtx, command: Comm
             ping_secs,
             checkpoint_secs,
             max_tasks,
+            cli,
             command,
         } => cmd_orchestrate(
             conn,
@@ -518,6 +523,7 @@ fn dispatch(conn: &mut Connection, db_path: &Path, out: OutputCtx, command: Comm
             ping_secs,
             checkpoint_secs,
             max_tasks,
+            cli,
             command,
         ),
         Commands::Fail {
@@ -806,20 +812,18 @@ fn cmd_init(conn: &Connection, db_path: &Path, out: OutputCtx) -> Result<(), Str
 
         println!();
         println!("  {}  {}", bold("IMI"), dim(&format!("v{VERSION}")));
-        println!("  {}", dim("AI Product Ops — intent, progress, alignment."));
+        println!("  {}", dim("The AI product manager for your AI agents."));
+        println!();
+        println!("  Stores your goals, decisions, and context in a local DB per project");
+        println!("  so AI agents remember what you're building across every session.");
+        println!("  Works natively with Cursor, Claude Code, Codex, and GitHub Copilot.");
+        println!();
+        println!("  {} Start any prompt with {} — e.g. {}",
+            dim("→"),
+            bold("imi"),
+            dim("\"imi save this goal for later\""));
         println!();
         println!("  {} {}", green("✓"), format!("Initialized → {}", db_path.display()));
-        println!();
-        println!("  {}", bold("Quick checks:"));
-        println!("  {}  {}",
-            "  imi context                         ",
-            dim("← what you're building and why"));
-        println!("  {}  {}",
-            "  imi plan                            ",
-            dim("← goals, tasks, and progress"));
-        println!("  {}  {}",
-            "  imi check                           ",
-            dim("← are we aligned and verified?"));
         println!();
     }
     Ok(())
@@ -2201,133 +2205,59 @@ fn cmd_complete(
     Ok(())
 }
 
-fn cmd_run(
-    conn: &Connection,
-    db_path: &Path,
-    out: OutputCtx,
-    task_id: String,
-    model: Option<String>,
-) -> Result<(), String> {
-    let id = resolve_id_prefix(conn, "tasks", &task_id)?
-        .ok_or_else(|| format!("No task with ID '{task_id}' — run `imi tasks` to list available tasks"))?;
-    let agent_id = current_agent(None);
-    let claimed = ensure_task_in_progress(conn, &id, &agent_id)?;
+fn build_task_context(conn: &Connection, db_path: &Path, task_id: &str) -> Result<PathBuf, String> {
     let task: (String, String, String, String, String, String, String, String) = conn
         .query_row(
             "SELECT id, title, COALESCE(description,''), COALESCE(acceptance_criteria,''), COALESCE(relevant_files,'[]'), COALESCE(tools,'[]'), COALESCE(workspace_path,''), COALESCE(goal_id,'')
              FROM tasks WHERE id=?1",
-            params![id],
-            |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                    r.get(7)?,
-                ))
-            },
+            params![task_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
         )
         .map_err(|e| e.to_string())?;
 
     let relevant_files: Vec<String> = serde_json::from_str(&task.4).unwrap_or_default();
     let tools: Vec<String> = serde_json::from_str(&task.5).unwrap_or_default();
-    let relevant_files_text = if relevant_files.is_empty() {
-        "- (none)".to_string()
-    } else {
-        relevant_files
-            .iter()
-            .map(|f| format!("- {f}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let tools_text = if tools.is_empty() {
-        "- (none)".to_string()
-    } else {
-        tools
-            .iter()
-            .map(|t| format!("- {t}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let goal = if task.7.is_empty() {
-        None
-    } else {
+    let relevant_files_text = if relevant_files.is_empty() { "- (none)".to_string() } else { relevant_files.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n") };
+    let tools_text = if tools.is_empty() { "- (none)".to_string() } else { tools.iter().map(|t| format!("- {t}")).collect::<Vec<_>>().join("\n") };
+
+    let goal = if task.7.is_empty() { None } else {
         conn.query_row(
             "SELECT COALESCE(name,''), COALESCE(description,''), COALESCE(why,'') FROM goals WHERE id=?1",
             params![task.7.clone()],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
+        ).optional().map_err(|e| e.to_string())?
     };
     let (goal_name, goal_description, goal_why) = goal.unwrap_or_else(|| ("".to_string(), "".to_string(), "".to_string()));
-    let prior_work_rows: Vec<(String, String, String, i64)> = if task.7.is_empty() {
-        Vec::new()
-    } else {
-        let mut stmt = conn
-            .prepare(
-                "SELECT COALESCE(m.task_id,''), COALESCE(t.title,''), COALESCE(m.value,''), COALESCE(m.created_at,0)
-                 FROM memories m
-                 JOIN tasks t ON t.id = m.task_id
-                 WHERE t.goal_id=?1 AND m.key='completion_summary' AND COALESCE(m.task_id,'') != ?2
-                 ORDER BY COALESCE(m.created_at,0) DESC
-                 LIMIT 3",
-            )
-            .map_err(|e| e.to_string())?;
-        let mapped = stmt.query_map(params![task.7.clone(), task.0.clone()], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        });
-        let rows = mapped
-            .map_err(|e| e.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?;
+
+    let prior_work_rows: Vec<(String, String, String, i64)> = if task.7.is_empty() { Vec::new() } else {
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(m.task_id,''), COALESCE(t.title,''), COALESCE(m.value,''), COALESCE(m.created_at,0)
+             FROM memories m JOIN tasks t ON t.id = m.task_id
+             WHERE t.goal_id=?1 AND m.key='completion_summary' AND COALESCE(m.task_id,'') != ?2
+             ORDER BY COALESCE(m.created_at,0) DESC LIMIT 3",
+        ).map_err(|e| e.to_string())?;
+        let rows: Vec<(String, String, String, i64)> = stmt.query_map(params![task.7.clone(), task.0.clone()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
         rows
     };
-    let prior_work_text = if prior_work_rows.is_empty() {
-        "- (none)".to_string()
-    } else {
-        prior_work_rows
-            .iter()
-            .map(|(task_id, title, summary, _)| format!("- **{title}** ({task_id}): {summary}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let goal_decisions_rows: Vec<(String, String, String)> = if goal_name.is_empty() {
-        Vec::new()
-    } else {
-        let mut stmt = conn
-            .prepare(
-                "SELECT COALESCE(what,''), COALESCE(why,''), COALESCE(affects,'')
-                 FROM decisions
-                 WHERE COALESCE(affects,'') LIKE ?1
-                 ORDER BY COALESCE(created_at,0) DESC
-                 LIMIT 3",
-            )
-            .map_err(|e| e.to_string())?;
-        let pat = format!("%{}%", goal_name);
-        let mapped = stmt.query_map(params![pat], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)));
-        let rows = mapped
-            .map_err(|e| e.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?;
-        rows
-    };
-    let goal_decisions_text = if goal_decisions_rows.is_empty() {
-        "- (none)".to_string()
-    } else {
-        goal_decisions_rows
-            .iter()
-            .map(|(what, why, affects)| format!("- **{what}** — {why} (affects: {affects})"))
-            .collect::<Vec<_>>()
-            .join("\n")
+    let prior_work_text = if prior_work_rows.is_empty() { "- (none)".to_string() } else {
+        prior_work_rows.iter().map(|(tid, title, summary, _)| format!("- **{title}** ({tid}): {summary}")).collect::<Vec<_>>().join("\n")
     };
 
-    let imi_dir = db_path
-        .parent()
-        .ok_or_else(|| "invalid db path".to_string())?;
+    let goal_decisions_rows: Vec<(String, String, String)> = if goal_name.is_empty() { Vec::new() } else {
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(what,''), COALESCE(why,''), COALESCE(affects,'') FROM decisions WHERE COALESCE(affects,'') LIKE ?1 ORDER BY COALESCE(created_at,0) DESC LIMIT 3",
+        ).map_err(|e| e.to_string())?;
+        let pat = format!("%{}%", goal_name);
+        let rows: Vec<(String, String, String)> = stmt.query_map(params![pat], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        rows
+    };
+    let goal_decisions_text = if goal_decisions_rows.is_empty() { "- (none)".to_string() } else {
+        goal_decisions_rows.iter().map(|(what, why, affects)| format!("- **{what}** — {why} (affects: {affects})")).collect::<Vec<_>>().join("\n")
+    };
+
+    let imi_dir = db_path.parent().ok_or_else(|| "invalid db path".to_string())?;
     let run_dir = imi_dir.join("runs").join(&task.0);
     fs::create_dir_all(&run_dir).map_err(|e| format!("failed to create run dir: {e}"))?;
 
@@ -2344,8 +2274,23 @@ fn cmd_run(
         goal_decisions = goal_decisions_text,
         workspace = if task.6.is_empty() { "(none)" } else { &task.6 },
     );
-    fs::write(run_dir.join("context.md"), context_md)
-        .map_err(|e| format!("failed to write context.md: {e}"))?;
+    fs::write(run_dir.join("context.md"), context_md).map_err(|e| format!("failed to write context.md: {e}"))?;
+    Ok(run_dir)
+}
+
+fn cmd_run(
+    conn: &Connection,
+    db_path: &Path,
+    out: OutputCtx,
+    task_id: String,
+    model: Option<String>,
+) -> Result<(), String> {
+    let id = resolve_id_prefix(conn, "tasks", &task_id)?
+        .ok_or_else(|| format!("No task with ID '{task_id}' — run `imi tasks` to list available tasks"))?;
+    let agent_id = current_agent(None);
+    let claimed = ensure_task_in_progress(conn, &id, &agent_id)?;
+
+    let run_dir = build_task_context(conn, db_path, &id)?;
 
     let selected_model = model.unwrap_or_else(|| "claude-sonnet-4-5".to_string());
     let hank_json = json!({
@@ -2367,7 +2312,7 @@ fn cmd_run(
 
     let watchdog = spawn_lifecycle_watchdog(
         db_path.to_path_buf(),
-        task.0.clone(),
+        claimed.id.clone(),
         claimed.goal_id.clone(),
         agent_id.clone(),
         300,
@@ -2387,28 +2332,28 @@ fn cmd_run(
         Ok(status) => status,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             let reason = "hankweave not found. Install with: npm install -g hankweave".to_string();
-            if task_status(conn, &task.0).unwrap_or_default() == "in_progress" {
-                let _ = cmd_fail(conn, out, Some(agent_id.clone()), task.0.clone(), reason.clone());
+            if task_status(conn, &claimed.id).unwrap_or_default() == "in_progress" {
+                let _ = cmd_fail(conn, out, Some(agent_id.clone()), claimed.id.clone(), reason.clone());
             }
             return Err(reason);
         }
         Err(e) => {
             let reason = format!("failed to run hankweave: {e}");
-            if task_status(conn, &task.0).unwrap_or_default() == "in_progress" {
-                let _ = cmd_fail(conn, out, Some(agent_id.clone()), task.0.clone(), reason.clone());
+            if task_status(conn, &claimed.id).unwrap_or_default() == "in_progress" {
+                let _ = cmd_fail(conn, out, Some(agent_id.clone()), claimed.id.clone(), reason.clone());
             }
             return Err(reason);
         }
     };
     if !status.success() {
         let reason = format!("hankweave exited with status: {status}");
-        if task_status(conn, &task.0).unwrap_or_default() == "in_progress" {
-            let _ = cmd_fail(conn, out, Some(agent_id.clone()), task.0.clone(), reason.clone());
+        if task_status(conn, &claimed.id).unwrap_or_default() == "in_progress" {
+            let _ = cmd_fail(conn, out, Some(agent_id.clone()), claimed.id.clone(), reason.clone());
         }
         return Err(reason);
     }
 
-    if task_status(conn, &task.0).unwrap_or_default() == "done" {
+    if task_status(conn, &claimed.id).unwrap_or_default() == "done" {
         emit_simple_ok(out, "Task already completed")?;
         return Ok(());
     }
@@ -2418,7 +2363,7 @@ fn cmd_run(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Completed via imi run (no summary.md)".to_string());
-    cmd_complete(conn, out, Some(agent_id), task.0, summary, None, None, None)
+    cmd_complete(conn, out, Some(agent_id), claimed.id, summary, None, None, None)
 }
 
 fn cmd_wrap(
@@ -2431,9 +2376,6 @@ fn cmd_wrap(
     checkpoint_secs: u64,
     command: Vec<String>,
 ) -> Result<(), String> {
-    let first = command
-        .first()
-        .ok_or_else(|| "command is required after --".to_string())?;
     let agent_id = current_agent(agent.as_deref());
     let task = ensure_task_in_progress(conn, &task_id, &agent_id)?;
     let workspace_path: String = conn
@@ -2444,6 +2386,72 @@ fn cmd_wrap(
         )
         .unwrap_or_default();
 
+    // Build context.md so the wrapped command (or hankweave) can read task details
+    let run_dir = build_task_context(conn, db_path, &task.id).ok();
+    let context_file = run_dir.as_ref().map(|d| d.join("context.md"));
+
+    // No command given — use hankweave (same execution path as imi run)
+    if command.is_empty() {
+        let run_dir = run_dir.ok_or_else(|| "failed to build task context".to_string())?;
+        let hank_json = json!({
+            "globalSystemPromptFile": "../../prompts/execute-mode.md",
+            "context": fs::read_to_string(run_dir.join("context.md")).map_err(|e| format!("failed to read context.md: {e}"))?,
+            "codons": [{ "model": "claude-sonnet-4-5", "promptFile": "context.md", "continuationMode": "fresh" }]
+        });
+        fs::write(
+            run_dir.join("hank.json"),
+            serde_json::to_string_pretty(&hank_json).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("failed to write hank.json: {e}"))?;
+        let watchdog = spawn_lifecycle_watchdog(
+            db_path.to_path_buf(), task.id.clone(), task.goal_id.clone(), agent_id.clone(), ping_secs, checkpoint_secs,
+        );
+        let status = Command::new("bunx")
+            .arg("hankweave")
+            .current_dir(&run_dir)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status();
+        if let Some(watchdog) = watchdog { watchdog.stop(); }
+        let status = match status {
+            Ok(s) => s,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let reason = "hankweave not found. Install with: npm install -g hankweave".to_string();
+                if task_status(conn, &task.id).unwrap_or_default() == "in_progress" {
+                    let _ = cmd_fail(conn, out, Some(agent_id.clone()), task.id.clone(), reason.clone());
+                }
+                return Err(reason);
+            }
+            Err(e) => {
+                let reason = format!("failed to run hankweave: {e}");
+                if task_status(conn, &task.id).unwrap_or_default() == "in_progress" {
+                    let _ = cmd_fail(conn, out, Some(agent_id.clone()), task.id.clone(), reason.clone());
+                }
+                return Err(reason);
+            }
+        };
+        if !status.success() {
+            let reason = format!("hankweave exited with status: {status}");
+            if task_status(conn, &task.id).unwrap_or_default() == "in_progress" {
+                let _ = cmd_fail(conn, out, Some(agent_id.clone()), task.id.clone(), reason.clone());
+            }
+            return Err(reason);
+        }
+        if task_status(conn, &task.id).unwrap_or_default() == "done" {
+            emit_simple_ok(out, "Task already completed")?;
+            return Ok(());
+        }
+        let summary = fs::read_to_string(run_dir.join("summary.md"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Completed via imi wrap (no summary.md)".to_string());
+        return cmd_complete(conn, out, Some(agent_id), task.id, summary, None, None, None);
+    }
+
+    // Custom command path
+    let first = command.first().unwrap();
     let watchdog = spawn_lifecycle_watchdog(
         db_path.to_path_buf(),
         task.id.clone(),
@@ -2456,9 +2464,14 @@ fn cmd_wrap(
     let mut child = Command::new(first);
     child
         .args(command.iter().skip(1))
+        .env("IMI_TASK_ID", &task.id)
+        .env("IMI_TASK_TITLE", &task.title)
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit());
+    if let Some(ref cf) = context_file {
+        child.env("IMI_TASK_CONTEXT_FILE", cf.display().to_string());
+    }
 
     if !workspace_path.trim().is_empty() {
         let workspace = PathBuf::from(workspace_path.trim());
@@ -2504,6 +2517,49 @@ struct OrchestrateWorker {
     task_id: String,
     agent_id: String,
     child: Child,
+}
+
+/// Resolve which CLI command workers should use when no explicit command is given.
+/// - None / "hankweave" → use `imi run` (hankweave, default)
+/// - "auto"             → detect from env vars: Claude Code → claude, OpenCode → opencode, Copilot → copilot, else hankweave
+/// - "claude"           → `sh -c 'claude -p "$(cat "$IMI_TASK_CONTEXT_FILE")" --dangerously-skip-permissions'`
+/// - "opencode"         → `opencode`
+/// - "codex"            → `sh -c 'codex exec "$(cat "$IMI_TASK_CONTEXT_FILE")"'`
+/// - "copilot"          → `sh -c 'gh agent-task create -F "$IMI_TASK_CONTEXT_FILE"'`
+/// Returns None to signal "use imi run / hankweave", or Some(command_vec) to use imi wrap.
+fn resolve_worker_cli(cli: Option<&str>) -> Option<Vec<String>> {
+    let cli = match cli {
+        None | Some("hankweave") => return None,
+        Some("auto") => {
+            // Detect from environment
+            if env::var("CLAUDE_CODE_SSE_PORT").is_ok() || env::var("CLAUDE_CODE_ENTRYPOINT").is_ok() {
+                "claude"
+            } else if env::var("OPENCODE_SESSION").is_ok() {
+                "opencode"
+            } else if env::var("GH_COPILOT_SESSION_ID").is_ok() || env::var("COPILOT_AGENT_SESSION").is_ok() {
+                "copilot"
+            } else {
+                return None; // fall back to hankweave
+            }
+        }
+        Some(v) => v,
+    };
+    match cli {
+        "claude" => Some(vec![
+            "sh".into(), "-c".into(),
+            r#"claude -p "$(cat "$IMI_TASK_CONTEXT_FILE")" --dangerously-skip-permissions"#.into(),
+        ]),
+        "opencode" => Some(vec!["opencode".into()]),
+        "codex" => Some(vec![
+            "sh".into(), "-c".into(),
+            r#"codex exec "$(cat "$IMI_TASK_CONTEXT_FILE")""#.into(),
+        ]),
+        "copilot" => Some(vec![
+            "sh".into(), "-c".into(),
+            r#"gh agent-task create -F "$IMI_TASK_CONTEXT_FILE""#.into(),
+        ]),
+        _ => None,
+    }
 }
 
 fn spawn_orchestrate_worker(
@@ -2556,11 +2612,19 @@ fn cmd_orchestrate(
     ping_secs: u64,
     checkpoint_secs: u64,
     max_tasks: Option<usize>,
+    cli: Option<String>,
     command: Vec<String>,
 ) -> Result<(), String> {
     if workers == 0 {
         return Err("workers must be >= 1".to_string());
     }
+
+    // Resolve which CLI to use for workers (only applies when no explicit command given)
+    let resolved_command: Vec<String> = if command.is_empty() {
+        resolve_worker_cli(cli.as_deref()).unwrap_or_default()
+    } else {
+        command
+    };
 
     let goal = if let Some(goal_id) = goal_id {
         Some(
@@ -2606,7 +2670,7 @@ fn cmd_orchestrate(
                         &worker_agent,
                         ping_secs,
                         checkpoint_secs,
-                        &command,
+                        &resolved_command,
                     ) {
                         Ok(child) => active.push(OrchestrateWorker {
                             task_id: task.id,
