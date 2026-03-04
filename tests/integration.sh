@@ -643,7 +643,7 @@ pass "4 sequential commands baseline: ${SEQ_MS}ms (parallel ran 8 in ${PERF_MS}m
 echo ""
 echo "── 23. Skill install paths ─────────────────────────────"
 
-SKILL_SRC="$(dirname "$0")/../skills/imi/SKILL.md"
+SKILL_SRC="$(dirname "$0")/../npm/skills/imi/SKILL.md"
 SKILL_SCRIPT_SRC="$(dirname "$0")/../skills/imi/scripts/session-start.sh"
 
 if [[ -f "$SKILL_SRC" ]]; then
@@ -687,6 +687,24 @@ fi
 # Simulate old install: no skills dir — ensure binary still works alone
 run status
 assert_exit "binary works standalone (old install path)" 0
+
+# ═════════════════════════════════════════════════════════════
+# 24. DEAD ASSET GUARDRAILS
+# Verify runtime-critical npm skill files are all present.
+# If any file is missing, it means it was accidentally deleted
+# or moved without updating the distribution package.
+# ═════════════════════════════════════════════════════════════
+echo ""
+echo "── 24. Dead asset guardrails ───────────────────────────"
+
+NPM_SKILL_DIR="$(dirname "$0")/../npm/skills/imi"
+for skill_file in SKILL.md ai-voice.md execute-mode.md ops-mode.md plan-mode.md imi.agent.md; do
+  if [[ -f "$NPM_SKILL_DIR/$skill_file" ]]; then
+    pass "npm skill file present: $skill_file"
+  else
+    fail "npm skill file MISSING: $skill_file" "$NPM_SKILL_DIR/$skill_file"
+  fi
+done
 
 # ═════════════════════════════════════════════════════════════
 # SUMMARY
