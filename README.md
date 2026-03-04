@@ -137,9 +137,9 @@ Drop these as system prompts to give any agent full IMI literacy:
 
 | File | Use when |
 |------|----------|
-| `prompts/plan-mode.md` | Agent is decomposing a goal into tasks |
+| `npm/skills/imi/plan-mode.md` | Agent is decomposing a goal into tasks |
 | `prompts/execute-mode.md` | Agent is executing a task |
-| `prompts/ops-mode.md` | Conversational ops / status / decisions |
+| `npm/skills/imi/ops-mode.md` | Conversational ops / status / decisions |
 
 ## Multi-Agent Support
 
