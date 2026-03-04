@@ -123,7 +123,7 @@ function installSkills(): void {
   // Agents that use a single flat file: install concatenated content
   const singleFileTargets: { name: string; dir: string; filename: string }[] = [
     { name: "Cursor",           dir: join(homedir(), ".cursor",   "rules"),          filename: "imi.md"          },
-    { name: "Codex / OpenCode", dir: join(homedir(), ".opencode", "instructions"),  filename: "imi-session.md"  },
+    { name: "OpenCode",         dir: join(homedir(), ".opencode", "instructions"),  filename: "imi-session.md"  },
     { name: "OpenAI Codex",     dir: join(homedir(), ".codex"),                     filename: "instructions.md" },
   ];
 
@@ -171,12 +171,7 @@ function installSkills(): void {
     }
   }
 
-  // Plugin registration
-  console.log(`\nPlugin setup:`);
   registerClaudePlugin();
-  if (existsSync(join(homedir(), ".copilot"))) {
-    console.log(`  GitHub Copilot CLI: run /plugin marketplace add ProjectAI00/ai-db-imi then /plugin install imi`);
-  }
 }
 
 function registerClaudePlugin(): void {
