@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # ── Binary location ──────────────────────────────────────────
-IMI_BIN="${IMI_BIN:-/Users/aimar/Documents/Kitchen/imi/ai-db-imi/target/release/imi}"
+IMI_BIN="${IMI_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/target/release/imi}"
 
 if [[ ! -x "$IMI_BIN" ]]; then
   echo "ERROR: imi binary not found (or not executable) at: $IMI_BIN"
@@ -112,7 +112,7 @@ echo "── 1. Version ──────────────────�
 run --version
 assert_exit   "imi --version exits 0"   0
 assert_contains "imi --version output"   "imi"
-assert_contains "imi --version semver"   "0.3.4"
+assert_contains "imi --version semver"   "0.3.19"
 
 # ═════════════════════════════════════════════════════════════
 # 2. INIT
