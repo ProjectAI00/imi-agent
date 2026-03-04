@@ -375,6 +375,71 @@ else
   fail "orchestrate: completion summaries missing" "DB said: $DB_OUT"
 fi
 
+# ─────────────────────────────────────────────────────────────
+# 9D. ORCHESTRATE --cli auto (auto-selection)
+# ─────────────────────────────────────────────────────────────
+echo ""
+echo "── 9D. Orchestrate --cli auto ──────────────────────────"
+
+run add-goal "Auto-select goal" "Verify --cli auto selects correct agent CLI"
+AUTO_GOAL_ID=$(echo "$CMD_OUT" | grep -oE '[a-z0-9]{14,}' | head -1)
+if [[ -z "$AUTO_GOAL_ID" ]]; then
+  db_query "SELECT id FROM goals ORDER BY rowid DESC LIMIT 1;"
+  AUTO_GOAL_ID="$DB_OUT"
+fi
+
+run add-task "$AUTO_GOAL_ID" "auto-select task 1" "auto worker one"
+run add-task "$AUTO_GOAL_ID" "auto-select task 2" "auto worker two"
+
+# Create a fake 'claude' binary that simply exits 0 (simulates a real agent run).
+# $FAKE_BIN_DIR lives inside $TEST_DIR which is removed by the EXIT trap above.
+FAKE_BIN_DIR="$TEST_DIR/fake-bin"
+mkdir -p "$FAKE_BIN_DIR"
+cat > "$FAKE_BIN_DIR/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$FAKE_BIN_DIR/claude"
+
+# With CLAUDE_CODE_ENTRYPOINT set, --cli auto should select the 'claude' path.
+# The resolved command becomes: sh -c 'claude -p "$(cat "$IMI_TASK_CONTEXT_FILE")" ...'
+# Our fake claude ignores arguments and exits 0, so wrap auto-completes the task.
+CLAUDE_CODE_ENTRYPOINT=1 PATH="$FAKE_BIN_DIR:$PATH" \
+  "$IMI_BIN" orchestrate "$AUTO_GOAL_ID" \
+    --workers 2 --max-tasks 2 --cli auto --agent-prefix auto-bench --ping-secs 1 --checkpoint-secs 1 \
+  2>&1 && CMD_EXIT=0 || CMD_EXIT=$?
+if [[ "$CMD_EXIT" -eq 0 ]]; then
+  pass "orchestrate --cli auto (CLAUDE_CODE_ENTRYPOINT) exits 0"
+else
+  fail "orchestrate --cli auto (CLAUDE_CODE_ENTRYPOINT) exited $CMD_EXIT"
+fi
+
+db_query "SELECT COUNT(*) FROM tasks WHERE goal_id='$AUTO_GOAL_ID' AND status='done';"
+if [[ "$DB_OUT" == "2" ]]; then
+  pass "orchestrate --cli auto: all tasks completed"
+else
+  fail "orchestrate --cli auto: expected 2 done tasks" "DB said: $DB_OUT"
+fi
+
+# With no agent env vars, --cli auto should fall back to hankweave (imi run).
+# Use --max-tasks 0 so no workers are launched — just verifies the flag is accepted.
+run add-goal "Auto-select fallback" "Verify --cli auto with no env vars"
+AUTO_FB_GOAL_ID=$(echo "$CMD_OUT" | grep -oE '[a-z0-9]{14,}' | head -1)
+if [[ -z "$AUTO_FB_GOAL_ID" ]]; then
+  db_query "SELECT id FROM goals ORDER BY rowid DESC LIMIT 1;"
+  AUTO_FB_GOAL_ID="$DB_OUT"
+fi
+(
+  # Unset all env vars documented in README's auto-detection table.
+  unset CLAUDE_CODE_SSE_PORT CLAUDE_CODE_ENTRYPOINT OPENCODE_SESSION GH_COPILOT_SESSION_ID COPILOT_AGENT_SESSION
+  "$IMI_BIN" orchestrate "$AUTO_FB_GOAL_ID" --workers 1 --max-tasks 0 --cli auto
+) && CMD_EXIT=0 || CMD_EXIT=$?
+if [[ "$CMD_EXIT" -eq 0 ]]; then
+  pass "orchestrate --cli auto (no env vars fallback) exits 0"
+else
+  fail "orchestrate --cli auto (no env vars fallback) exited $CMD_EXIT"
+fi
+
 # ═════════════════════════════════════════════════════════════
 # 10. MEMORY ADD + LIST
 # ═════════════════════════════════════════════════════════════

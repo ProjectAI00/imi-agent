@@ -79,7 +79,8 @@ imi goal "name" --why "why now"       # Create a goal
 imi task <goal_id> "title" --why "..." # Add a task
 imi log "direction note"              # Log strategic direction
 imi decide "what" "why"               # Log a decision
-imi orchestrate <goal_id> --workers 8 -- <cmd ...>  # Parallel worker loop
+imi orchestrate <goal_id> --workers 8 -- <cmd ...>  # Parallel worker loop (hankweave)
+imi orchestrate <goal_id> --workers 4 --cli auto    # Auto-detect agent CLI from environment
 ```
 
 ## The Loop
@@ -150,5 +151,22 @@ imi next --agent engineer-a --toon   # Agent A claims task 1
 imi next --agent engineer-b --toon   # Agent B claims task 2 (different task)
 imi next --agent engineer-c --toon   # Agent C claims task 3
 ```
+
+Or spin up a parallel worker pool that auto-selects the right CLI for the current environment:
+
+```bash
+imi orchestrate <goal_id> --workers 4 --cli auto
+```
+
+`--cli auto` detects the running agent environment and routes accordingly:
+
+| Environment variable | Detected agent |
+|---|---|
+| `CLAUDE_CODE_SSE_PORT` or `CLAUDE_CODE_ENTRYPOINT` | Claude Code |
+| `OPENCODE_SESSION` | OpenCode |
+| `GH_COPILOT_SESSION_ID` or `COPILOT_AGENT_SESSION` | GitHub Copilot |
+| _(none)_ | hankweave (default) |
+
+You can also specify the CLI explicitly: `--cli claude`, `--cli opencode`, `--cli codex`, or `--cli hankweave`.
 
 If a task is abandoned, IMI auto-releases it after 30 minutes. The next agent picks it up with full failure context.
