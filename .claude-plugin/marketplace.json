@@ -7,7 +7,7 @@
   "metadata": {
     "description": "IMI — persistent state engine for AI agents. Goals, tasks, and memory across all sessions.",
     "version": "1.0.0",
-    "homepage": "https://github.com/ProjectAI00/ai-db-imi"
+    "homepage": "https://github.com/ProjectAI00/imi-agent"
   },
   "plugins": [
     {

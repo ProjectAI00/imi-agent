@@ -7,7 +7,8 @@
 set -euo pipefail
 
 # ── Binary location ──────────────────────────────────────────
-IMI_BIN="${IMI_BIN:-/Users/aimar/Documents/Kitchen/imi/ai-db-imi/target/release/imi}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IMI_BIN="${IMI_BIN:-$REPO_ROOT/target/release/imi}"
 
 if [[ ! -x "$IMI_BIN" ]]; then
   echo "ERROR: imi binary not found (or not executable) at: $IMI_BIN"

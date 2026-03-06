@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -u -o pipefail
 
-IMI_BIN="/Users/aimar/Documents/Kitchen/imi/ai-db-imi/target/release/imi"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IMI_BIN="${IMI_BIN:-$REPO_ROOT/target/release/imi}"
 SESSION_START_SCRIPT="$REPO_ROOT/scripts/session-start.sh"
 
 PASS=0

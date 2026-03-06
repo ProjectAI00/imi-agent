@@ -47,19 +47,19 @@ without manual briefing.
 
 **Claude Code:**
 ```bash
-/plugin marketplace add ProjectAI00/ai-db-imi
+/plugin marketplace add ProjectAI00/imi-agent
 /plugin install imi
 ```
 
 **GitHub Copilot CLI:**
 ```
-/plugin marketplace add ProjectAI00/ai-db-imi
+/plugin marketplace add ProjectAI00/imi-agent
 /plugin install imi
 ```
 
 **Or install the skill manually** (works in Claude Code, Copilot CLI, Cursor — anywhere that reads `~/.copilot/skills` or `~/.claude/skills`):
 ```bash
-npx skills add ProjectAI00/ai-db-imi@imi
+npx skills add ProjectAI00/imi-agent@imi
 ```
 
 ## Usage
@@ -158,7 +158,7 @@ If a task is abandoned, IMI auto-releases it after 30 minutes. The next agent pi
 To quickly inspect human vs agent vs CI/bot usage from PostHog:
 
 ```bash
-cp scripts/.env.posthog.example scripts/.env.posthog
+cp local.env.example local.env
 # fill POSTHOG_PROJECT_ID + POSTHOG_API_KEY
 scripts/posthog-usage.sh
 ```
@@ -167,4 +167,12 @@ Optional window:
 
 ```bash
 DAYS=30 scripts/posthog-usage.sh
+```
+
+Router options:
+
+```bash
+scripts/posthog-usage.sh overview   # totals + top events
+scripts/posthog-usage.sh daily      # daily breakdown
+scripts/posthog-usage.sh all        # both (default)
 ```

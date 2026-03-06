@@ -17,7 +17,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ProjectAI00/ai-db-imi"
+    "url": "https://github.com/ProjectAI00/imi-agent"
   },
   "engines": {
     "bun": ">=1.0.0"

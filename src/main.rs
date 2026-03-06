@@ -725,7 +725,7 @@ fn fetch_latest_version() -> Option<String> {
             "-s", "--max-time", "5",
             "-H", "Accept: application/vnd.github.v3+json",
             "-H", "User-Agent: imi-cli",
-            "https://api.github.com/repos/ProjectAI00/ai-db-imi/releases/latest",
+            "https://api.github.com/repos/ProjectAI00/imi-agent/releases/latest",
         ])
         .output()
         .ok()?;
@@ -750,7 +750,7 @@ fn is_newer(latest: &str, current: &str) -> bool {
 fn install_version(version: &str) -> Result<(), String> {
     let target = get_platform_target().ok_or("Unsupported platform")?;
     let url = format!(
-        "https://github.com/ProjectAI00/ai-db-imi/releases/download/v{version}/imi-{target}.tar.gz"
+        "https://github.com/ProjectAI00/imi-agent/releases/download/v{version}/imi-{target}.tar.gz"
     );
     let current_bin = std::env::current_exe().map_err(|e| format!("cannot find binary: {e}"))?;
     let bin_dir = current_bin.parent().ok_or("cannot find bin dir")?;

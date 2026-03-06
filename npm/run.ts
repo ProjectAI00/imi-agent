@@ -9,7 +9,7 @@ import { homedir, tmpdir } from "os";
 import { IncomingMessage } from "http";
 const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url).pathname, "utf8")) as { version: string };
 const VERSION: string = pkg.version;
-const REPO = "ProjectAI00/ai-db-imi";
+const REPO = "ProjectAI00/imi-agent";
 const BIN_DIR = join(homedir(), ".local", "bin");
 const BIN = join(BIN_DIR, "imi");
 
@@ -192,7 +192,7 @@ function registerClaudePlugin(): void {
   if (!existsSync(installLocation)) {
     try {
       execSync(
-        `git clone --depth 1 https://github.com/ProjectAI00/ai-db-imi "${installLocation}"`,
+        `git clone --depth 1 https://github.com/ProjectAI00/imi-agent "${installLocation}"`,
         { stdio: "pipe" }
       );
     } catch {
@@ -201,7 +201,7 @@ function registerClaudePlugin(): void {
   }
 
   known["imi"] = {
-    source: { source: "github", repo: "ProjectAI00/ai-db-imi" },
+    source: { source: "github", repo: "ProjectAI00/imi-agent" },
     installLocation,
     lastUpdated: new Date().toISOString(),
   };
