@@ -24,6 +24,10 @@ impl FileCursor {
         }
     }
 
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     /// Read any new complete lines appended since last call.
     /// Returns Vec of (line_number, line_string) for each complete new line.
     /// Handles partial lines by buffering until newline arrives.

@@ -287,6 +287,13 @@ enum Commands {
         #[arg(last = true, num_args = 0.., allow_hyphen_values = true)]
         command: Vec<String>,
     },
+    /// Watch Copilot and Claude Code session files and index them into ~/.imi/sessions.db
+    #[command(about = "Watch AI session files and index them into sessions.db")]
+    Watch {
+        /// How often to rescan for new session files (seconds)
+        #[arg(long, default_value_t = 30)]
+        scan_interval: u64,
+    },
     #[command(hide = true, about = "Release a task lock and record why it's blocked")]
     Fail {
         #[arg(long)]
@@ -614,6 +621,9 @@ fn dispatch(
             outcome,
         ),
         Commands::Run { task_id, model } => cmd_run(conn, db_path, out, task_id, model),
+        Commands::Watch { scan_interval } => {
+            crate::session_capture::watch::run_watch(scan_interval)
+        }
         Commands::Wrap {
             agent,
             task_id,
@@ -774,6 +784,7 @@ fn command_key(command: &Commands) -> &'static str {
         Commands::Start { .. } => "start",
         Commands::Complete { .. } => "complete",
         Commands::Run { .. } => "run",
+        Commands::Watch { .. } => "watch",
         Commands::Wrap { .. } => "wrap",
         Commands::Orchestrate { .. } => "orchestrate",
         Commands::Fail { .. } => "fail",
