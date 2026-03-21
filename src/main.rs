@@ -294,6 +294,19 @@ enum Commands {
         #[arg(long, default_value_t = 30)]
         scan_interval: u64,
     },
+    /// Show indexed AI session history from ~/.imi/sessions.db
+    #[command(about = "Show AI session history (requires imi watch to have run)")]
+    Sessions {
+        /// Filter sessions by project path
+        #[arg(long)]
+        project: Option<String>,
+        /// Number of sessions to show
+        #[arg(long, default_value_t = 10)]
+        limit: u64,
+    },
+    /// Run the session indexer to materialize session summaries
+    #[command(about = "Index raw session events into session summaries", hide = true)]
+    IndexSessions,
     #[command(hide = true, about = "Release a task lock and record why it's blocked")]
     Fail {
         #[arg(long)]
@@ -624,6 +637,8 @@ fn dispatch(
         Commands::Watch { scan_interval } => {
             crate::session_capture::watch::run_watch(scan_interval)
         }
+        Commands::Sessions { project, limit } => cmd_sessions(conn, out, project, limit),
+        Commands::IndexSessions => cmd_index_sessions(out),
         Commands::Wrap {
             agent,
             task_id,
@@ -757,6 +772,171 @@ fn dispatch(
     }
 }
 
+fn cmd_sessions(
+    _conn: &Connection,
+    out: OutputCtx,
+    project_filter: Option<String>,
+    limit: u64,
+) -> Result<(), String> {
+    let sconn = crate::session_capture::db::open_sessions_db()
+        .map_err(|e| format!("sessions.db not found — run 'imi watch' first: {e}"))?;
+
+    let _ = crate::session_capture::indexer::run_indexer(300);
+
+    struct SessionRow {
+        session_id: String,
+        source: String,
+        project: String,
+        duration_minutes: i64,
+        files_touched_count: i64,
+        error_count: i64,
+        tool_call_count: i64,
+        ended_by: String,
+        end_time_ms: i64,
+    }
+
+    let rows = if let Some(project) = project_filter.as_deref() {
+        let mut stmt = sconn
+            .prepare(
+                "SELECT session_id, source, project, cwd, start_time_ms, end_time_ms,
+                        duration_minutes, files_touched_count, error_count, tool_call_count, ended_by
+                 FROM sessions_summary
+                 WHERE project LIKE ?1
+                 ORDER BY end_time_ms DESC
+                 LIMIT ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let mapped = stmt
+            .query_map(params![format!("%{project}%"), limit as i64], |r| {
+                Ok(SessionRow {
+                    session_id: r.get(0)?,
+                    source: r.get(1)?,
+                    project: r.get(2)?,
+                    duration_minutes: r.get(6)?,
+                    files_touched_count: r.get(7)?,
+                    error_count: r.get(8)?,
+                    tool_call_count: r.get(9)?,
+                    ended_by: r.get(10)?,
+                    end_time_ms: r.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let rows = mapped
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    } else {
+        let mut stmt = sconn
+            .prepare(
+                "SELECT session_id, source, project, cwd, start_time_ms, end_time_ms,
+                        duration_minutes, files_touched_count, error_count, tool_call_count, ended_by
+                 FROM sessions_summary
+                 ORDER BY end_time_ms DESC
+                 LIMIT ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let mapped = stmt
+            .query_map(params![limit as i64], |r| {
+                Ok(SessionRow {
+                    session_id: r.get(0)?,
+                    source: r.get(1)?,
+                    project: r.get(2)?,
+                    duration_minutes: r.get(6)?,
+                    files_touched_count: r.get(7)?,
+                    error_count: r.get(8)?,
+                    tool_call_count: r.get(9)?,
+                    ended_by: r.get(10)?,
+                    end_time_ms: r.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let rows = mapped
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+
+    if rows.is_empty() {
+        println!("No sessions indexed yet. Run 'imi watch' to start capturing sessions.");
+        return Ok(());
+    }
+
+    if out.is_json() {
+        let sessions = rows
+            .iter()
+            .map(|r| {
+                json!({
+                    "session_id": r.session_id,
+                    "source": r.source,
+                    "project": r.project,
+                    "duration_minutes": r.duration_minutes,
+                    "files_touched": r.files_touched_count,
+                    "errors": r.error_count,
+                    "tool_calls": r.tool_call_count,
+                    "ended_by": r.ended_by,
+                })
+            })
+            .collect::<Vec<_>>();
+        println!("{}", json!({ "ok": true, "sessions": sessions }));
+        return Ok(());
+    }
+
+    println!("{}", paint(out, "1", &format!("  {} sessions", rows.len())));
+    println!();
+
+    for r in &rows {
+        let proj_short = r
+            .project
+            .split('/')
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("/");
+        let end_secs = r.end_time_ms / 1000;
+        let age_mins = (crate::session_capture::types::now_ms() / 1000 - end_secs) / 60;
+        let age_str = if age_mins < 60 {
+            format!("{age_mins}m ago")
+        } else if age_mins < 1440 {
+            format!("{}h ago", age_mins / 60)
+        } else {
+            format!("{}d ago", age_mins / 1440)
+        };
+        let errors = if r.error_count > 0 {
+            paint(out, "31", &r.error_count.to_string())
+        } else {
+            r.error_count.to_string()
+        };
+
+        println!(
+            "  {} {} {} {}m  {} files  {} errors  {} calls",
+            paint(out, "36", &format!("[{}]", r.source)),
+            paint(out, "33", &proj_short),
+            paint(out, "90", &age_str),
+            r.duration_minutes,
+            r.files_touched_count,
+            errors,
+            r.tool_call_count,
+        );
+    }
+    println!();
+    Ok(())
+}
+
+fn cmd_index_sessions(out: OutputCtx) -> Result<(), String> {
+    eprintln!("Indexing sessions...");
+    let count = crate::session_capture::indexer::run_indexer(300)
+        .map_err(|e| format!("Indexer failed: {e}"))?;
+    if out.is_json() {
+        println!("{}", json!({ "ok": true, "materialized": count }));
+    } else {
+        println!("Indexed {} sessions into sessions_summary.", count);
+    }
+    Ok(())
+}
+
 fn extract_output_mode(args: Vec<String>) -> (OutputMode, Vec<String>) {
     let mut mode = OutputMode::Human;
     let mut keep = Vec::with_capacity(args.len());
@@ -785,6 +965,8 @@ fn command_key(command: &Commands) -> &'static str {
         Commands::Complete { .. } => "complete",
         Commands::Run { .. } => "run",
         Commands::Watch { .. } => "watch",
+        Commands::Sessions { .. } => "sessions",
+        Commands::IndexSessions => "index-sessions",
         Commands::Wrap { .. } => "wrap",
         Commands::Orchestrate { .. } => "orchestrate",
         Commands::Fail { .. } => "fail",

@@ -1,265 +1,184 @@
 #![allow(dead_code)]
-use crate::session_capture::db::open_sessions_db;
-use rusqlite::{params, Connection, OptionalExtension};
+
+use crate::session_capture::{db::open_sessions_db, types::now_ms};
+use rusqlite::params;
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 
-/// Materialize sessions_summary for all sessions that have ended
-/// (either explicit session_end event or inactivity > inactivity_secs).
-/// Safe to call multiple times — uses INSERT OR REPLACE (idempotent).
-pub fn run_indexer(inactivity_secs: i64) -> Result<usize, String> {
-    let conn = open_sessions_db()?;
-    let now_ms = crate::session_capture::types::now_ms();
-    let inactivity_threshold_ms = inactivity_secs * 1000;
+#[derive(Debug, Default)]
+struct SessionAggregate {
+    source: String,
+    project: String,
+    cwd: Option<String>,
+    start_time_ms: i64,
+    end_time_ms: i64,
+    files_touched: BTreeSet<String>,
+    error_count: i64,
+    tool_call_count: i64,
+    ended_by: String,
+}
 
-    // Get all distinct session_ids that have events
-    let mut stmt = conn
-        .prepare("SELECT DISTINCT session_id FROM raw_events ORDER BY session_id")
-        .map_err(|e| e.to_string())?;
-
-    let session_ids: Vec<String> = stmt
-        .query_map([], |r| r.get(0))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    let mut materialized = 0;
-    for session_id in &session_ids {
-        // Get session bounds
-        let bounds: Option<(i64, i64, i64, String, Option<String>, Option<String>)> = conn
-            .query_row(
-                "SELECT min(timestamp_ms), max(timestamp_ms), count(*),
-                    source,
-                    (SELECT cwd FROM raw_events WHERE session_id=?1 AND cwd IS NOT NULL LIMIT 1),
-                    (SELECT project FROM raw_events WHERE session_id=?1 AND project IS NOT NULL LIMIT 1)
-             FROM raw_events WHERE session_id=?1",
-                params![session_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+pub fn run_indexer(inactivity_secs: u64) -> Result<usize, String> {
+    let mut conn = open_sessions_db()?;
+    let mut sessions: BTreeMap<String, SessionAggregate> = BTreeMap::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT session_id, source, project, cwd, event_type, timestamp_ms, payload_json
+                 FROM raw_events
+                 ORDER BY session_id, timestamp_ms, id",
             )
-            .optional()
             .map_err(|e| e.to_string())?;
 
-        let (start_ms, last_event_ms, tool_call_count, source, cwd, project) = match bounds {
-            Some(b) => b,
-            None => continue,
-        };
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
 
-        // Determine if session has ended
-        let has_explicit_end: bool = conn
-            .query_row(
-                "SELECT count(*) FROM raw_events WHERE session_id=?1 AND event_type='session_end'",
-                params![session_id],
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap_or(0)
-            > 0;
+        for row in rows {
+            let (session_id, source, project, cwd, event_type, timestamp_ms, payload_json) =
+                row.map_err(|e| e.to_string())?;
+            let agg = sessions.entry(session_id).or_default();
 
-        let is_inactive = (now_ms - last_event_ms) > inactivity_threshold_ms;
+            if agg.source.is_empty() {
+                agg.source = source;
+            }
+            if agg.project.is_empty() {
+                agg.project = project
+                    .clone()
+                    .filter(|p| !p.trim().is_empty())
+                    .or_else(|| cwd.clone())
+                    .unwrap_or_else(|| "unknown".to_string());
+            }
+            if agg.cwd.is_none() {
+                agg.cwd = cwd.clone();
+            }
+            if agg.start_time_ms == 0 || timestamp_ms < agg.start_time_ms {
+                agg.start_time_ms = timestamp_ms;
+            }
+            if timestamp_ms > agg.end_time_ms {
+                agg.end_time_ms = timestamp_ms;
+            }
 
-        if !has_explicit_end && !is_inactive {
-            continue; // Session still active, skip
+            match event_type.as_str() {
+                "tool_call" => agg.tool_call_count += 1,
+                "malformed_json" => agg.error_count += 1,
+                "tool_result" if payload_success_is_false(&payload_json) => agg.error_count += 1,
+                "session_end" => {
+                    agg.ended_by = "session_end".to_string();
+                    for file in session_end_files(&payload_json) {
+                        agg.files_touched.insert(file);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let now = now_ms();
+    let inactivity_ms = (inactivity_secs as i64) * 1000;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    for (session_id, mut agg) in sessions {
+        if agg.project.is_empty() {
+            agg.project = agg.cwd.clone().unwrap_or_else(|| "unknown".to_string());
+        }
+        if agg.ended_by.is_empty() {
+            agg.ended_by = if now - agg.end_time_ms >= inactivity_ms {
+                "inactivity".to_string()
+            } else {
+                "active".to_string()
+            };
         }
 
-        let ended_by = if has_explicit_end {
-            "explicit"
+        let duration_minutes = if agg.end_time_ms <= agg.start_time_ms {
+            0
         } else {
-            "inactivity"
+            ((agg.end_time_ms - agg.start_time_ms) + 59_999) / 60_000
         };
+        let files_touched = agg.files_touched.into_iter().collect::<Vec<_>>();
+        let files_touched_json =
+            serde_json::to_string(&files_touched).unwrap_or_else(|_| "[]".to_string());
 
-        // Compute end_time_ms
-        let end_ms = if has_explicit_end {
-            conn.query_row(
-                "SELECT timestamp_ms FROM raw_events WHERE session_id=?1 AND event_type='session_end' LIMIT 1",
-                params![session_id],
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap_or(last_event_ms)
-        } else {
-            last_event_ms
-        };
-
-        let duration_minutes = ((end_ms - start_ms) / 1000 / 60).max(0);
-
-        // Files touched — from session_end payload (filesModified) first, then tool_call args
-        let files_touched_json = compute_files_touched(&conn, session_id, &project)?;
-        let files_touched: Vec<String> =
-            serde_json::from_str(&files_touched_json).unwrap_or_default();
-        let files_touched_count = files_touched.len() as i64;
-
-        // Error count — tool_result events with success=false
-        let error_count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM raw_events
-             WHERE session_id=?1 AND event_type='tool_result'
-             AND json_extract(payload_json, '$.success') = 0",
-                params![session_id],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-
-        // Test outcomes — bash tool results matching test patterns
-        let test_outcomes_json = compute_test_outcomes(&conn, session_id)?;
-
-        let project_val = project.as_deref().unwrap_or(cwd.as_deref().unwrap_or("unknown"));
-
-        conn.execute(
-            "INSERT OR REPLACE INTO sessions_summary
-             (session_id, source, project, cwd, start_time_ms, end_time_ms,
-              last_event_time_ms, duration_minutes, files_touched_json,
-              files_touched_count, error_count, test_outcomes_json,
-              tool_call_count, ended_by, updated_at_ms)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+        tx.execute(
+            "INSERT INTO sessions_summary
+                (session_id, source, project, cwd, start_time_ms, end_time_ms, last_event_time_ms,
+                 duration_minutes, files_touched_json, files_touched_count, error_count,
+                 test_outcomes_json, tool_call_count, ended_by, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, '[]', ?12, ?13, ?14)
+             ON CONFLICT(session_id) DO UPDATE SET
+                 source = excluded.source,
+                 project = excluded.project,
+                 cwd = excluded.cwd,
+                 start_time_ms = excluded.start_time_ms,
+                 end_time_ms = excluded.end_time_ms,
+                 last_event_time_ms = excluded.last_event_time_ms,
+                 duration_minutes = excluded.duration_minutes,
+                 files_touched_json = excluded.files_touched_json,
+                 files_touched_count = excluded.files_touched_count,
+                 error_count = excluded.error_count,
+                 test_outcomes_json = excluded.test_outcomes_json,
+                 tool_call_count = excluded.tool_call_count,
+                 ended_by = excluded.ended_by,
+                 updated_at_ms = excluded.updated_at_ms",
             params![
                 session_id,
-                source,
-                project_val,
-                cwd,
-                start_ms,
-                end_ms,
-                last_event_ms,
+                agg.source,
+                agg.project,
+                agg.cwd,
+                agg.start_time_ms,
+                agg.end_time_ms,
+                agg.end_time_ms,
                 duration_minutes,
                 files_touched_json,
-                files_touched_count,
-                error_count,
-                test_outcomes_json,
-                tool_call_count,
-                ended_by,
-                crate::session_capture::types::now_ms(),
+                files_touched.len() as i64,
+                agg.error_count,
+                agg.tool_call_count,
+                agg.ended_by,
+                now,
             ],
         )
         .map_err(|e| e.to_string())?;
-
-        materialized += 1;
     }
 
-    Ok(materialized)
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(sessions_len(&conn)?)
 }
 
-fn compute_files_touched(
-    conn: &Connection,
-    session_id: &str,
-    project: &Option<String>,
-) -> Result<String, String> {
-    let mut files: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    // 1. Best source: session_end event filesModified
-    let end_payload: Option<String> = conn
-        .query_row(
-            "SELECT payload_json FROM raw_events WHERE session_id=?1 AND event_type='session_end' LIMIT 1",
-            params![session_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
-
-    if let Some(payload) = end_payload {
-        if let Ok(v) = serde_json::from_str::<Value>(&payload) {
-            if let Some(arr) = v["files_modified"].as_array() {
-                for f in arr {
-                    if let Some(s) = f.as_str() {
-                        files.insert(normalize_path(s, project.as_deref()));
-                    }
-                }
-            }
-        }
-    }
-
-    // 2. Fallback: extract paths from tool_call payload_json arguments
-    // Look for known path-bearing fields: path, file_path, filename
-    if files.is_empty() {
-        let mut stmt = conn
-            .prepare(
-                "SELECT payload_json FROM raw_events
-             WHERE session_id=?1 AND event_type='tool_call'
-             AND (tool_name IN ('edit','create','view') OR payload_json LIKE '%\"path\"%')",
-            )
-            .map_err(|e| e.to_string())?;
-
-        let payloads: Vec<String> = stmt
-            .query_map(params![session_id], |r| r.get(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        for payload in payloads {
-            if let Ok(v) = serde_json::from_str::<Value>(&payload) {
-                for key in &["path", "file_path", "filename"] {
-                    if let Some(s) = v[*key].as_str() {
-                        if looks_like_file_path(s) {
-                            files.insert(normalize_path(s, project.as_deref()));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let mut sorted: Vec<String> = files.into_iter().collect();
-    sorted.sort();
-    Ok(serde_json::to_string(&sorted).unwrap_or_else(|_| "[]".to_string()))
+fn payload_success_is_false(payload_json: &str) -> bool {
+    serde_json::from_str::<Value>(payload_json)
+        .ok()
+        .and_then(|value| value.get("success").and_then(Value::as_bool))
+        == Some(false)
 }
 
-fn compute_test_outcomes(conn: &Connection, session_id: &str) -> Result<String, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT payload_json FROM raw_events
-         WHERE session_id=?1 AND event_type='tool_result'
-         AND tool_name='bash'",
-        )
-        .map_err(|e| e.to_string())?;
-
-    let mut outcomes = Vec::new();
-    let payloads: Vec<String> = stmt
-        .query_map(params![session_id], |r| r.get(0))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    for payload in payloads {
-        if let Ok(v) = serde_json::from_str::<Value>(&payload) {
-            let output = v["output"].as_str().unwrap_or("");
-            let success = v["success"].as_bool().unwrap_or(true);
-
-            // Detect test runs
-            if output.contains("test result:")
-                || output.contains("tests passed")
-                || output.contains("cargo test")
-            {
-                let status = if output.contains("FAILED") || output.contains("test result: FAILED")
-                {
-                    "fail"
-                } else if output.contains("test result: ok") || output.contains("tests passed") {
-                    "pass"
-                } else {
-                    continue;
-                };
-                outcomes.push(serde_json::json!({"kind":"test","status":status}));
-            }
-            // Detect build
-            else if output.contains("cargo build") || output.contains("Compiling") {
-                let status = if !success || output.contains("error[") {
-                    "fail"
-                } else {
-                    "pass"
-                };
-                outcomes.push(serde_json::json!({"kind":"build","status":status}));
-            }
-        }
-    }
-
-    outcomes.dedup_by_key(|o| o["kind"].as_str().unwrap_or("").to_string());
-    Ok(serde_json::to_string(&outcomes).unwrap_or_else(|_| "[]".to_string()))
+fn session_end_files(payload_json: &str) -> Vec<String> {
+    serde_json::from_str::<Value>(payload_json)
+        .ok()
+        .and_then(|value| value.get("files_modified").cloned())
+        .and_then(|value| value.as_array().cloned())
+        .map(|files| {
+            files
+                .into_iter()
+                .filter_map(|file| file.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-fn normalize_path(path: &str, project: Option<&str>) -> String {
-    // If path starts with project root, make it relative
-    if let Some(proj) = project {
-        if let Some(rel) = path.strip_prefix(proj) {
-            return rel.trim_start_matches('/').to_string();
-        }
-    }
-    path.to_string()
-}
-
-fn looks_like_file_path(s: &str) -> bool {
-    s.starts_with('/') || s.starts_with("./") || s.contains('.')
+fn sessions_len(conn: &rusqlite::Connection) -> Result<usize, String> {
+    conn.query_row("SELECT COUNT(*) FROM sessions_summary", [], |row| {
+        row.get::<_, i64>(0)
+    })
+    .map(|count| count as usize)
+    .map_err(|e| e.to_string())
 }
