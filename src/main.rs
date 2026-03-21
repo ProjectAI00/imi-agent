@@ -304,6 +304,17 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         limit: u64,
     },
+    /// Print a structured summary of the latest AI session for the current project.
+    /// Call this at session end — output gives the coding agent context to write imi complete/log/decide.
+    #[command(
+        name = "session-end",
+        about = "Print structured session summary for the current project"
+    )]
+    SessionEnd {
+        /// Project path (defaults to current directory)
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Run the session indexer to materialize session summaries
     #[command(about = "Index raw session events into session summaries", hide = true)]
     IndexSessions,
@@ -638,6 +649,7 @@ fn dispatch(
             crate::session_capture::watch::run_watch(scan_interval)
         }
         Commands::Sessions { project, limit } => cmd_sessions(conn, out, project, limit),
+        Commands::SessionEnd { project } => cmd_session_end(out, project),
         Commands::IndexSessions => cmd_index_sessions(out),
         Commands::Wrap {
             agent,
@@ -925,6 +937,152 @@ fn cmd_sessions(
     Ok(())
 }
 
+fn cmd_session_end(out: OutputCtx, project_override: Option<String>) -> Result<(), String> {
+    use std::env;
+
+    let cwd = project_override.unwrap_or_else(|| {
+        env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string())
+    });
+    let project = crate::session_capture::types::canonical_project(&cwd);
+
+    let sconn = crate::session_capture::db::open_sessions_db()
+        .map_err(|e| format!("sessions.db not found — run 'imi watch' first: {e}"))?;
+
+    let _ = crate::session_capture::indexer::run_indexer(60);
+
+    let latest_session_id: Option<String> = sconn
+        .query_row(
+            "SELECT ss.session_id FROM sessions_summary ss
+             LEFT JOIN session_insights si ON ss.session_id = si.session_id
+             WHERE ss.project LIKE ?1 AND si.session_id IS NULL
+             ORDER BY ss.end_time_ms DESC LIMIT 1",
+            rusqlite::params![format!("%{}%", project)],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    if let Some(sid) = &latest_session_id {
+        let _ = crate::session_capture::compress::compress_session(sid);
+    }
+
+    let insight: Option<(String, String, String, String, i64, String)> = sconn
+        .query_row(
+            "SELECT si.decisions_observed_json, si.failures_observed_json,
+                    si.files_at_risk_json, si.summary_text, si.task_completed,
+                    ss.project
+             FROM session_insights si
+             JOIN sessions_summary ss ON si.session_id = ss.session_id
+             WHERE ss.project LIKE ?1
+             ORDER BY si.generated_at_ms DESC LIMIT 1",
+            rusqlite::params![format!("%{}%", project)],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let (decisions_json, failures_json, files_at_risk_json, summary_text, task_completed, proj) =
+        match insight {
+            Some(i) => i,
+            None => {
+                let msg = format!(
+                    "No session insights found for project: {project}\n\
+                     Run 'imi watch' to capture sessions, then 'imi session-end' after a session completes."
+                );
+                if out.is_json() {
+                    println!("{}", serde_json::json!({ "ok": false, "error": msg }));
+                } else {
+                    println!("{msg}");
+                }
+                return Ok(());
+            }
+        };
+
+    let decisions: Vec<serde_json::Value> =
+        serde_json::from_str(&decisions_json).unwrap_or_default();
+    let failures: Vec<serde_json::Value> = serde_json::from_str(&failures_json).unwrap_or_default();
+    let files_at_risk: Vec<String> =
+        serde_json::from_str(&files_at_risk_json).unwrap_or_default();
+
+    if out.is_json() {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "project": proj,
+                "summary": summary_text,
+                "task_completed": task_completed == 1,
+                "decisions": decisions,
+                "failures": failures,
+                "files_at_risk": files_at_risk,
+            })
+        );
+        return Ok(());
+    }
+
+    println!("## SESSION SUMMARY");
+    println!();
+    println!("{summary_text}");
+    println!();
+
+    println!("## TASK COMPLETED");
+    println!(
+        "{}",
+        if task_completed == 1 {
+            "Yes — verified by successful test/build"
+        } else {
+            "No — no successful verification detected"
+        }
+    );
+    println!();
+
+    if !decisions.is_empty() {
+        println!("## DECISIONS OBSERVED");
+        for d in &decisions {
+            let speaker = d["speaker"].as_str().unwrap_or("?");
+            let text = d["text"].as_str().unwrap_or("");
+            println!("- [{speaker}] {text}");
+        }
+        println!();
+    }
+
+    if !failures.is_empty() {
+        println!("## FAILURES OBSERVED");
+        for f in &failures {
+            let tool = f["tool_name"].as_str().unwrap_or("unknown");
+            let err = f["error_excerpt"].as_str().unwrap_or("");
+            println!("- [{tool}] {err}");
+        }
+        println!();
+    }
+
+    if !files_at_risk.is_empty() {
+        println!("## FILES AT RISK");
+        for f in &files_at_risk {
+            println!("- {f}");
+        }
+        println!();
+    }
+
+    println!("## SUGGESTED ACTIONS");
+    if task_completed == 1 {
+        println!("- Run: imi complete <task_id> \"<summary based on above>\"");
+    } else {
+        println!("- If work is complete: imi complete <task_id> \"<summary>\"");
+        println!("- If blocked: imi log \"BLOCKED: <reason>\"");
+    }
+    if !decisions.is_empty() {
+        println!("- Log decisions: imi decide \"<what>\" \"<why>\"");
+    }
+    if !failures.is_empty() {
+        println!("- Log failures: imi log \"<failure note>\"");
+    }
+
+    Ok(())
+}
+
 fn cmd_index_sessions(out: OutputCtx) -> Result<(), String> {
     eprintln!("Indexing sessions...");
     let count = crate::session_capture::indexer::run_indexer(300)
@@ -966,6 +1124,7 @@ fn command_key(command: &Commands) -> &'static str {
         Commands::Run { .. } => "run",
         Commands::Watch { .. } => "watch",
         Commands::Sessions { .. } => "sessions",
+        Commands::SessionEnd { .. } => "session-end",
         Commands::IndexSessions => "index-sessions",
         Commands::Wrap { .. } => "wrap",
         Commands::Orchestrate { .. } => "orchestrate",
