@@ -304,6 +304,14 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         limit: u64,
     },
+    #[command(
+        name = "brief",
+        about = "Generate a world-model brief for the current session"
+    )]
+    Brief {
+        #[arg(long, help = "Project to generate brief for (default: current git repo)")]
+        project: Option<String>,
+    },
     /// Print a structured summary of the latest AI session for the current project.
     /// Call this at session end — output gives the coding agent context to write imi complete/log/decide.
     #[command(
@@ -649,6 +657,7 @@ fn dispatch(
             crate::session_capture::watch::run_watch(scan_interval)
         }
         Commands::Sessions { project, limit } => cmd_sessions(conn, out, project, limit),
+        Commands::Brief { project } => cmd_brief(out, project),
         Commands::SessionEnd { project } => cmd_session_end(out, project),
         Commands::IndexSessions => cmd_index_sessions(out),
         Commands::Wrap {
@@ -937,6 +946,39 @@ fn cmd_sessions(
     Ok(())
 }
 
+fn cmd_brief(ctx: OutputCtx, project: Option<String>) -> Result<(), String> {
+    use crate::session_capture::{brief::generate_brief, db::open_sessions_db};
+    use crate::session_capture::types::canonical_project;
+
+    let _ = ctx;
+    let sessions_conn = open_sessions_db()
+        .map_err(|e| format!("sessions.db not found — run 'imi watch' first: {e}"))?;
+
+    let proj = match project {
+        Some(p) => p,
+        None => {
+            let output = std::process::Command::new("git")
+                .args(["remote", "get-url", "origin"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .unwrap_or_default();
+            if output.trim().is_empty() {
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .unwrap_or_else(|| "unknown".into())
+            } else {
+                canonical_project(output.trim())
+            }
+        }
+    };
+
+    let brief = generate_brief(&sessions_conn, &proj)?;
+    println!("{brief}");
+    Ok(())
+}
+
 fn cmd_session_end(out: OutputCtx, project_override: Option<String>) -> Result<(), String> {
     use std::env;
 
@@ -1124,6 +1166,7 @@ fn command_key(command: &Commands) -> &'static str {
         Commands::Run { .. } => "run",
         Commands::Watch { .. } => "watch",
         Commands::Sessions { .. } => "sessions",
+        Commands::Brief { .. } => "brief",
         Commands::SessionEnd { .. } => "session-end",
         Commands::IndexSessions => "index-sessions",
         Commands::Wrap { .. } => "wrap",
