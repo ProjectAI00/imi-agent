@@ -35,7 +35,8 @@ impl ClaudeSource {
 
             for session_entry in session_entries.flatten() {
                 let path = session_entry.path();
-                if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+                if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+                {
                     files.push(path);
                 }
             }
@@ -54,14 +55,7 @@ impl ClaudeSource {
             .into_iter()
             .next()
             .unwrap_or_else(|| {
-                let meta = Self::build_meta(
-                    source_path,
-                    "empty",
-                    now_ms(),
-                    None,
-                    None,
-                    line_no,
-                );
+                let meta = Self::build_meta(source_path, "empty", now_ms(), None, None, line_no);
                 SessionEvent::Unknown(UnknownEvent {
                     meta,
                     payload: Value::Null,
@@ -74,14 +68,8 @@ impl ClaudeSource {
         let raw_json: Value = match serde_json::from_str(line) {
             Ok(value) => value,
             Err(error) => {
-                let meta = Self::build_meta(
-                    source_path,
-                    "malformed_json",
-                    now_ms(),
-                    None,
-                    None,
-                    line_no,
-                );
+                let meta =
+                    Self::build_meta(source_path, "malformed_json", now_ms(), None, None, line_no);
                 return vec![SessionEvent::Malformed(MalformedEvent {
                     meta,
                     raw_line: line.to_string(),
@@ -139,7 +127,9 @@ impl ClaudeSource {
             Value::Array(blocks) => {
                 let tool_results = blocks
                     .iter()
-                    .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+                    .filter(|block| {
+                        block.get("type").and_then(Value::as_str) == Some("tool_result")
+                    })
                     .map(|block| {
                         let output = match block.get("content") {
                             Some(Value::String(text)) => text.clone(),
@@ -193,7 +183,10 @@ impl ClaudeSource {
                     .map(|block| {
                         SessionEvent::ToolCall(ToolCallEvent {
                             meta: meta.clone(),
-                            call_id: block.get("id").and_then(Value::as_str).map(ToOwned::to_owned),
+                            call_id: block
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .map(ToOwned::to_owned),
                             tool_name: block
                                 .get("name")
                                 .and_then(Value::as_str)

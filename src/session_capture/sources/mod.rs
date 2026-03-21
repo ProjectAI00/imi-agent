@@ -1,2 +1,2 @@
-pub mod copilot;
 pub mod claude;
+pub mod copilot;

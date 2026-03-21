@@ -13,16 +13,21 @@ pub fn open_sessions_db() -> Result<Connection, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let conn = Connection::open(&path).map_err(|e| e.to_string())?;
-    conn.pragma_update(None, "journal_mode", "WAL").map_err(|e| e.to_string())?;
-    conn.pragma_update(None, "synchronous", "NORMAL").map_err(|e| e.to_string())?;
-    conn.pragma_update(None, "foreign_keys", "ON").map_err(|e| e.to_string())?;
-    conn.pragma_update(None, "busy_timeout", "5000").map_err(|e| e.to_string())?;
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .map_err(|e| e.to_string())?;
+    conn.pragma_update(None, "synchronous", "NORMAL")
+        .map_err(|e| e.to_string())?;
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .map_err(|e| e.to_string())?;
+    conn.pragma_update(None, "busy_timeout", "5000")
+        .map_err(|e| e.to_string())?;
     run_sessions_schema(&conn)?;
     Ok(conn)
 }
 
 pub fn run_sessions_schema(conn: &Connection) -> Result<(), String> {
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS raw_events (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             source          TEXT NOT NULL,
@@ -86,5 +91,7 @@ pub fn run_sessions_schema(conn: &Connection) -> Result<(), String> {
 
         CREATE INDEX IF NOT EXISTS idx_session_insights_project_generated
             ON session_insights(project, generated_at_ms DESC);
-    ").map_err(|e| e.to_string())
+    ",
+    )
+    .map_err(|e| e.to_string())
 }
