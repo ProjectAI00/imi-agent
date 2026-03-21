@@ -101,7 +101,22 @@ fn open_state_db() -> Option<Connection> {
 
 fn state_db_path() -> PathBuf {
     if let Ok(path) = std::env::var("IMI_DB") {
-        return PathBuf::from(path);
+        if !path.trim().is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+
+    // Walk up from CWD looking for .imi/state.db (mirrors discover_db_path in main.rs)
+    if let Ok(mut dir) = std::env::current_dir() {
+        loop {
+            let candidate = dir.join(".imi").join("state.db");
+            if candidate.exists() {
+                return candidate;
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
     }
 
     if let Ok(home) = std::env::var("HOME") {

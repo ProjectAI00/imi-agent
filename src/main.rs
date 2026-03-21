@@ -957,20 +957,10 @@ fn cmd_brief(ctx: OutputCtx, project: Option<String>) -> Result<(), String> {
     let proj = match project {
         Some(p) => p,
         None => {
-            let output = std::process::Command::new("git")
-                .args(["remote", "get-url", "origin"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .unwrap_or_default();
-            if output.trim().is_empty() {
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                    .unwrap_or_else(|| "unknown".into())
-            } else {
-                canonical_project(output.trim())
-            }
+            let cwd = std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string());
+            canonical_project(&cwd)
         }
     };
 
