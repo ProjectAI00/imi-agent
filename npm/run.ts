@@ -212,7 +212,95 @@ function registerClaudePlugin(): void {
 function runInit(): void {
   installSkills();
   const result = spawnSync(BIN, ["init"], { stdio: "inherit" });
-  process.exit(result.status ?? 0);
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1);
+  }
+  
+  startWatchDaemon();
+  process.exit(0);
+}
+
+function isWatchRunning(): boolean {
+  try {
+    const ps = execSync("ps aux", { encoding: "utf8" });
+    return ps.split("\n").some(line => line.includes("imi watch") && !line.includes("grep"));
+  } catch {
+    return false;
+  }
+}
+
+function startWatchDaemon(): void {
+  if (isWatchRunning()) {
+    console.log("\n✓ Session tracker already running");
+    return;
+  }
+
+  console.log("\nStarting session tracker...");
+  
+  // Set up launchd for macOS (auto-restart on boot)
+  if (process.platform === "darwin") {
+    setupLaunchd();
+  }
+
+  // Start the daemon now
+  try {
+    const { spawn } = require("child_process");
+    const child = spawn(BIN, ["watch"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    
+    // Give it a moment to start
+    execSync("sleep 1", { stdio: "pipe" });
+    
+    if (isWatchRunning()) {
+      console.log("✓ Session tracker started — now capturing all Copilot/Claude sessions");
+      console.log("  Data stored in: ~/.imi/sessions.db (local only, never leaves your machine)");
+      console.log("  Stop anytime: imi watch stop");
+    } else {
+      console.log("⚠ Failed to start — run manually: imi watch &");
+    }
+  } catch (err) {
+    console.log("⚠ Could not start daemon — run manually: imi watch &");
+  }
+}
+
+function setupLaunchd(): void {
+  const plistPath = join(homedir(), "Library", "LaunchAgents", "com.imi.watch.plist");
+  const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.imi.watch</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${BIN}</string>
+    <string>watch</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${join(homedir(), ".imi", "watch.log")}</string>
+  <key>StandardErrorPath</key>
+  <string>${join(homedir(), ".imi", "watch.error.log")}</string>
+</dict>
+</plist>`;
+
+  try {
+    const launchAgentsDir = join(homedir(), "Library", "LaunchAgents");
+    mkdirSync(launchAgentsDir, { recursive: true });
+    writeFileSync(plistPath, plistContent);
+    
+    // Unload existing if present, then load
+    try { execSync(`launchctl unload "${plistPath}" 2>/dev/null`, { stdio: "pipe" }); } catch {}
+    execSync(`launchctl load "${plistPath}"`, { stdio: "pipe" });
+  } catch (err) {
+    // Launchd setup failed — daemon will still start, just won't auto-restart on boot
+  }
 }
 
 main().catch((err: Error) => {

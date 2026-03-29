@@ -131,4 +131,27 @@ The repo includes prompts for the main IMI modes:
 | `prompts/plan-mode.md` | turning intent into goals and tasks |
 | `prompts/execute-mode.md` | executing tasks and writing back useful summaries |
 
+## World Model V1.5 Evaluation
+
+The world-model v1.5 branch introduces memory+causality features to improve agent outcomes across sessions. The evaluation protocol ensures measurable, reproducible validation before promotion to main.
+
+**Quick start:**
+```bash
+# Switch to world-model branch
+git checkout world-model
+
+# Run tuning phase benchmarks
+./benchmarks/run_tuning.sh --mode=baseline --runs=10
+./benchmarks/run_tuning.sh --mode=treatment --runs=10
+
+# Run final evaluation (30 runs per family)
+./benchmarks/run_final.sh --mode=baseline --runs=30 --seed-offset=1000
+./benchmarks/run_final.sh --mode=treatment --runs=30 --seed-offset=1000
+
+# Check promotion gate (>=5% improvement required)
+./benchmarks/analyze.sh --phase=final --check-gate
+```
+
+**Full protocol:** See [docs/world-model-v1.5-evaluation-protocol.md](docs/world-model-v1.5-evaluation-protocol.md) for complete details on baseline/treatment definitions, benchmark families, fixed seeds, metrics, and artifact formats.
+
 

@@ -1,7 +1,10 @@
 pub mod brief;
 pub mod compress;
 pub mod db;
+pub mod hooks;
 pub mod indexer;
+pub mod memory;
+pub mod memory_loop;
 pub mod sources;
 pub mod tail;
 pub mod types;

@@ -1,6 +1,15 @@
 #![allow(dead_code)]
 
-use crate::session_capture::{db::open_sessions_db, types::now_ms};
+use crate::session_capture::{
+    db::open_sessions_db,
+    memory::{self, Memory},
+    memory_loop::{
+        compute_retrieval_score, detect_and_resolve_contradiction, evolve_truth_status,
+        extract_causal_tuples, map_intervention_signal, should_exclude_from_default_retrieval,
+        to_json_string, AgentStep, TruthLifecycleSignal, TruthStatus,
+    },
+    types::{now_ms, EventMeta, SessionEvent, ToolCallEvent, ToolResultEvent, UserMessageEvent},
+};
 use regex::Regex;
 use rusqlite::params;
 use serde_json::Value;
@@ -73,6 +82,8 @@ pub fn compress_session(session_id: &str) -> Result<bool, String> {
         .collect();
 
     let decisions = extract_decisions(&messages);
+    let normalized_events = load_normalized_events(&conn, session_id)?;
+    let causal_tuples = extract_causal_tuples(&normalized_events);
 
     let mut fail_stmt = conn
         .prepare(
@@ -169,23 +180,134 @@ pub fn compress_session(session_id: &str) -> Result<bool, String> {
         proj_short, duration_minutes, files_touched_count, top_activity, error_count, outcome_str
     );
 
+    let prior_truth_status = latest_truth_status_for_project(&conn, &project)?;
+    let contradiction_signal = !failures.is_empty() && task_completed;
+    let supersession_signal = task_completed && error_count == 0 && !causal_tuples.is_empty();
+    let contradiction = detect_and_resolve_contradiction(
+        prior_truth_status,
+        0.8,
+        &project,
+        &project,
+        contradiction_signal,
+        supersession_signal && prior_truth_status == TruthStatus::Validated,
+    );
+    let truth_status = if contradiction.contradiction_detected {
+        contradiction.status
+    } else if task_completed && error_count == 0 {
+        evolve_truth_status(prior_truth_status, TruthLifecycleSignal::ValidationEvidence)
+    } else if error_count > 0 {
+        evolve_truth_status(prior_truth_status, TruthLifecycleSignal::AmbiguousEvidence)
+    } else {
+        prior_truth_status
+    };
+
+    let importance = memory::compute_importance(
+        files_touched_count,
+        error_count,
+        tool_call_count,
+        duration_minutes,
+        task_completed,
+        decisions.len(),
+        failures.len(),
+    );
+    let relevance = (importance as f32 / 10.0).clamp(0.0, 1.0);
+    let recency = memory::compute_recency_decay(now_ms(), now_ms());
+    let evidence_strength = ((causal_tuples.len() as f32 * 0.2)
+        + if task_completed { 0.4 } else { 0.0 }
+        + if failures.is_empty() { 0.2 } else { 0.0 })
+    .clamp(0.0, 1.0);
+    let score = compute_retrieval_score(relevance, recency, evidence_strength, truth_status);
+    let total_score = if should_exclude_from_default_retrieval(truth_status) {
+        0.0
+    } else {
+        score.total
+    };
+
+    let intervention_signal = map_intervention_signal(
+        if task_completed {
+            AgentStep::Complete
+        } else if error_count > 0 {
+            AgentStep::Verify
+        } else {
+            AgentStep::Execute
+        },
+        contradiction.confidence,
+        contradiction.contradiction_detected,
+    );
+
     conn.execute(
         "INSERT OR REPLACE INTO session_insights
          (session_id, project, generated_at_ms, decisions_observed_json,
-          failures_observed_json, task_completed, files_at_risk_json, summary_text)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+          failures_observed_json, task_completed, files_at_risk_json, summary_text,
+          causal_tuples_json, truth_status, contradiction_detected, contradiction_policy,
+          contradiction_note, retrieval_relevance, retrieval_recency, retrieval_evidence_strength,
+          retrieval_truth_component, retrieval_total_score, intervention_signal)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
         params![
             session_id,
             project,
             now_ms(),
-            serde_json::to_string(&decisions).unwrap_or_else(|_| "[]".to_string()),
-            serde_json::to_string(&failures).unwrap_or_else(|_| "[]".to_string()),
+            to_json_string(&decisions),
+            to_json_string(&failures),
             task_completed as i64,
-            serde_json::to_string(&files_at_risk).unwrap_or_else(|_| "[]".to_string()),
+            to_json_string(&files_at_risk),
             summary_text,
+            to_json_string(&causal_tuples),
+            truth_status.as_str(),
+            contradiction.contradiction_detected as i64,
+            contradiction.policy.as_str(),
+            contradiction.note,
+            score.relevance,
+            score.recency,
+            score.evidence_strength,
+            score.truth_status,
+            total_score,
+            intervention_signal.as_str(),
         ],
     )
     .map_err(|e| e.to_string())?;
+
+    // Parallel write to memories table for unified retrieval.
+    let importance = memory::compute_importance(
+        files_touched_count,
+        error_count,
+        tool_call_count,
+        duration_minutes,
+        task_completed,
+        decisions.len(),
+        failures.len(),
+    );
+    let mem = Memory {
+        id: 0, // auto-generated
+        env_id: project.clone(),
+        domain: "coding".to_string(),
+        level: 1, // session-level
+        what: summary_text,
+        result: if task_completed {
+            "good".to_string()
+        } else {
+            "neutral".to_string()
+        },
+        context: session_id.to_string(),
+        action_type: "session_summary".to_string(),
+        outcome_detail: serde_json::json!({
+            "session_id": session_id,
+            "causal_tuples": causal_tuples,
+            "decisions": decisions,
+            "failures": failures,
+        })
+        .to_string(),
+        importance: importance as i32,
+        embedding: None,
+        confidence: total_score as f64,
+        truth_status: truth_status.as_str().to_string(),
+        evidence_for: 0,
+        evidence_against: 0,
+        source_ids: serde_json::json!([format!("compress:{session_id}")]).to_string(),
+        created_at: now_ms(),
+        last_accessed: now_ms(),
+    };
+    memory::insert_memory(&conn, &mem).map_err(|e| e.to_string())?;
 
     Ok(true)
 }
@@ -335,4 +457,108 @@ fn truncate(s: &str, max_chars: usize) -> String {
 
     let truncated: String = s.chars().take(max_chars.saturating_sub(1)).collect();
     format!("{truncated}…")
+}
+
+fn latest_truth_status_for_project(
+    conn: &rusqlite::Connection,
+    project: &str,
+) -> Result<TruthStatus, String> {
+    let status = conn
+        .query_row(
+            "SELECT truth_status
+             FROM session_insights
+             WHERE project = ?1
+             ORDER BY generated_at_ms DESC
+             LIMIT 1",
+            params![project],
+            |r| r.get::<_, String>(0),
+        )
+        .ok();
+    Ok(status
+        .as_deref()
+        .map(TruthStatus::parse)
+        .unwrap_or(TruthStatus::Uncertain))
+}
+
+fn load_normalized_events(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<Vec<SessionEvent>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT source, session_id, timestamp_ms, cwd, project, event_type, payload_json, tool_name, call_id
+             FROM raw_events
+             WHERE session_id=?1
+               AND event_type IN ('tool_call','tool_result','user_message')
+             ORDER BY timestamp_ms, id",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(params![session_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut events = Vec::new();
+    for row in rows {
+        let (source, sid, timestamp_ms, cwd, project, event_type, payload_json, tool_name, call_id) =
+            row.map_err(|e| e.to_string())?;
+        let meta = EventMeta {
+            source: if source == "claude" {
+                crate::session_capture::types::SourceKind::Claude
+            } else {
+                crate::session_capture::types::SourceKind::Copilot
+            },
+            session_id: sid,
+            timestamp_ms,
+            cwd,
+            project,
+            raw_type: event_type.clone(),
+        };
+        match event_type.as_str() {
+            "tool_call" => {
+                let arguments: Value = serde_json::from_str(&payload_json).unwrap_or(Value::Null);
+                events.push(SessionEvent::ToolCall(ToolCallEvent {
+                    meta,
+                    call_id,
+                    tool_name: tool_name.unwrap_or_else(|| "unknown".to_string()),
+                    arguments,
+                }));
+            }
+            "tool_result" => {
+                let payload: Value = serde_json::from_str(&payload_json).unwrap_or(Value::Null);
+                events.push(SessionEvent::ToolResult(ToolResultEvent {
+                    meta,
+                    call_id,
+                    tool_name: tool_name.unwrap_or_else(String::new),
+                    success: payload
+                        .get("success")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    output: payload
+                        .get("output")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                }));
+            }
+            "user_message" => {
+                let text = serde_json::from_str::<String>(&payload_json).unwrap_or(payload_json);
+                events.push(SessionEvent::UserMessage(UserMessageEvent { meta, text }));
+            }
+            _ => {}
+        }
+    }
+    Ok(events)
 }

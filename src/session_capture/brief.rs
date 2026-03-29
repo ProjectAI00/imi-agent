@@ -43,8 +43,12 @@ pub fn generate_brief(sessions_conn: &Connection, project: &str) -> Result<Strin
     let session_insights_cols = table_columns(sessions_conn, "session_insights")?;
     let sessions_summary_cols = table_columns(sessions_conn, "sessions_summary")?;
 
-    let recent_sessions =
-        load_recent_sessions(sessions_conn, project, &session_insights_cols, &sessions_summary_cols)?;
+    let recent_sessions = load_recent_sessions(
+        sessions_conn,
+        project,
+        &session_insights_cols,
+        &sessions_summary_cols,
+    )?;
 
     let state_conn = open_state_db();
     let active_goal = state_conn.as_ref().and_then(load_active_goal);
@@ -60,12 +64,17 @@ pub fn generate_brief(sessions_conn: &Connection, project: &str) -> Result<Strin
     let active_goal_body = build_active_goal_body(state_conn.is_some(), active_goal.as_ref());
     let where_left_off_body = build_where_left_off_body(&recent_sessions);
     let known_risks_body = build_known_risks_body(&recent_sessions);
-    let decisions_body = build_decisions_body(state_conn.is_some(), &state_decisions, &recent_sessions);
+    let decisions_body =
+        build_decisions_body(state_conn.is_some(), &state_decisions, &recent_sessions);
     let next_task_body = build_next_task_body(state_conn.is_some(), next_task.as_ref());
 
     let mut sections = vec![
         render_section("ACTIVE GOAL", &active_goal_body, ACTIVE_GOAL_BUDGET),
-        render_section("WHERE WE LEFT OFF", &where_left_off_body, WHERE_LEFT_OFF_BUDGET),
+        render_section(
+            "WHERE WE LEFT OFF",
+            &where_left_off_body,
+            WHERE_LEFT_OFF_BUDGET,
+        ),
         render_section("KNOWN RISKS", &known_risks_body, KNOWN_RISKS_BUDGET),
         render_section("DECISIONS IN EFFECT", &decisions_body, DECISIONS_BUDGET),
         render_section("NEXT TASK", &next_task_body, NEXT_TASK_BUDGET),
@@ -265,6 +274,11 @@ fn load_recent_sessions(
     };
     let error_expr = "COALESCE(ss.error_count, 0)";
     let task_expr = "COALESCE(si.task_completed, 0)";
+    let truth_filter = if insight_cols.contains("truth_status") {
+        "AND COALESCE(si.truth_status, 'uncertain') NOT IN ('invalidated', 'superseded')"
+    } else {
+        ""
+    };
 
     let sql = format!(
         "SELECT COALESCE(si.summary_text, ''),
@@ -278,6 +292,7 @@ fn load_recent_sessions(
          FROM session_insights si
          LEFT JOIN sessions_summary ss ON ss.session_id = si.session_id
          WHERE si.project = ?1
+           {truth_filter}
          ORDER BY {sort_expr} DESC
          LIMIT 2"
     );
@@ -452,7 +467,10 @@ fn build_next_task_body(state_available: bool, task: Option<&TaskBrief>) -> Stri
                 "Acceptance: {}",
                 empty_fallback(&task.acceptance_criteria, "unavailable")
             ),
-            format!("Files: {}", empty_fallback(&task.relevant_files, "unavailable")),
+            format!(
+                "Files: {}",
+                empty_fallback(&task.relevant_files, "unavailable")
+            ),
         ]
         .join("\n"),
         None => "No pending task found.".to_string(),
@@ -468,7 +486,8 @@ fn render_section(header: &str, body: &str, max_bytes: usize) -> String {
 
 fn shrink_sections_to_total(sections: &mut [String], max_total: usize) {
     loop {
-        let total = sections.iter().map(|s| s.len()).sum::<usize>() + sections.len().saturating_sub(1);
+        let total =
+            sections.iter().map(|s| s.len()).sum::<usize>() + sections.len().saturating_sub(1);
         if total < max_total {
             break;
         }
@@ -526,7 +545,11 @@ fn duration_minutes_label(duration_secs: i64) -> String {
 }
 
 fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
 }
 
 fn normalize_priority(priority: &str) -> String {
@@ -619,10 +642,7 @@ fn decode_json_array(raw: &str, kind: JsonKind) -> Vec<String> {
                         Some(clean_inline(&combined))
                     }
                 }
-                JsonKind::FilePath => map
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .map(clean_inline),
+                JsonKind::FilePath => map.get("path").and_then(|v| v.as_str()).map(clean_inline),
             },
             _ => None,
         })

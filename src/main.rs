@@ -309,7 +309,10 @@ enum Commands {
         about = "Generate a world-model brief for the current session"
     )]
     Brief {
-        #[arg(long, help = "Project to generate brief for (default: current git repo)")]
+        #[arg(
+            long,
+            help = "Project to generate brief for (default: current git repo)"
+        )]
         project: Option<String>,
     },
     /// Print a structured summary of the latest AI session for the current project.
@@ -462,6 +465,75 @@ enum Commands {
     },
     #[command(hide = true, about = "Show active and interrupted task sessions")]
     Session,
+    #[command(
+        about = "Run A/B benchmark campaigns for world-model validation. Executes reproducible baseline vs treatment experiments with configurable memory injection and scoring."
+    )]
+    Benchmark {
+        #[command(subcommand)]
+        action: BenchmarkAction,
+    },
+    #[command(
+        name = "delta-brief",
+        about = "Generate a compact delta brief summarising recent activity and relevant past memories"
+    )]
+    DeltaBrief {
+        /// Project / env_id to scope the brief (default: current git repo)
+        #[arg(long)]
+        project: Option<String>,
+        /// Only include memories newer than this timestamp (epoch ms). 0 = last 5 min.
+        #[arg(long, default_value_t = 0)]
+        since: i64,
+    },
+    #[command(
+        name = "compress-patterns",
+        about = "Scan memories for repeated patterns and promote them to level-2 pattern memories",
+        hide = true
+    )]
+    CompressPatterns,
+    #[command(
+        name = "hook-handler",
+        about = "Handle Claude Code hook events — reads JSON from stdin, outputs response JSON",
+        hide = true
+    )]
+    HookHandler,
+}
+
+#[derive(Subcommand, Debug)]
+enum BenchmarkAction {
+    #[command(about = "Run a benchmark campaign (baseline or treatment)")]
+    Run {
+        /// Benchmark mode: baseline (no memory) or treatment (with memory)
+        #[arg(long, default_value = "baseline")]
+        mode: String,
+        /// Number of runs per benchmark
+        #[arg(long, default_value = "5")]
+        runs: u32,
+        /// Random seed for reproducibility
+        #[arg(long, default_value = "42")]
+        seed: u32,
+        /// Enable v1.5 memory loop (treatment mode)
+        #[arg(long)]
+        memory_injection: bool,
+        /// Success score threshold
+        #[arg(long, default_value = "0.75")]
+        score_threshold: f64,
+        /// Output directory for results
+        #[arg(long)]
+        output: Option<String>,
+    },
+    #[command(about = "Analyze delta between baseline and treatment campaigns")]
+    Analyze {
+        /// Path to baseline campaign results directory
+        baseline_dir: String,
+        /// Path to treatment campaign results directory
+        treatment_dir: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// Write results to file instead of stdout
+        #[arg(long)]
+        output: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -790,6 +862,10 @@ fn dispatch(
             force,
         } => cmd_cancel(conn, out, task_id, goal_id, force),
         Commands::Session => cmd_session(conn, out),
+        Commands::Benchmark { action } => cmd_benchmark(out, action),
+        Commands::DeltaBrief { project, since } => cmd_delta_brief(out, project, since),
+        Commands::CompressPatterns => cmd_compress_patterns(out),
+        Commands::HookHandler => cmd_hook_handler(),
     }
 }
 
@@ -947,12 +1023,16 @@ fn cmd_sessions(
 }
 
 fn cmd_brief(ctx: OutputCtx, project: Option<String>) -> Result<(), String> {
-    use crate::session_capture::{brief::generate_brief, db::open_sessions_db};
     use crate::session_capture::types::canonical_project;
+    use crate::session_capture::{brief::generate_brief, db::open_sessions_db};
 
     let _ = ctx;
     let sessions_conn = open_sessions_db()
         .map_err(|e| format!("sessions.db not found — run 'imi watch' first: {e}"))?;
+
+    // Auto-run pipeline: index raw events, then compress into insights
+    let _ = crate::session_capture::indexer::run_indexer(300);
+    let _ = crate::session_capture::compress::compress_all_pending(20);
 
     let proj = match project {
         Some(p) => p,
@@ -1008,9 +1088,19 @@ fn cmd_session_end(out: OutputCtx, project_override: Option<String>) -> Result<(
              FROM session_insights si
              JOIN sessions_summary ss ON si.session_id = ss.session_id
              WHERE ss.project LIKE ?1
+               AND COALESCE(si.truth_status, 'uncertain') NOT IN ('invalidated', 'superseded')
              ORDER BY si.generated_at_ms DESC LIMIT 1",
             rusqlite::params![format!("%{}%", project)],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
         )
         .optional()
         .map_err(|e| e.to_string())?;
@@ -1035,8 +1125,7 @@ fn cmd_session_end(out: OutputCtx, project_override: Option<String>) -> Result<(
     let decisions: Vec<serde_json::Value> =
         serde_json::from_str(&decisions_json).unwrap_or_default();
     let failures: Vec<serde_json::Value> = serde_json::from_str(&failures_json).unwrap_or_default();
-    let files_at_risk: Vec<String> =
-        serde_json::from_str(&files_at_risk_json).unwrap_or_default();
+    let files_at_risk: Vec<String> = serde_json::from_str(&files_at_risk_json).unwrap_or_default();
 
     if out.is_json() {
         println!(
@@ -1127,6 +1216,60 @@ fn cmd_index_sessions(out: OutputCtx) -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_delta_brief(
+    out: OutputCtx,
+    project: Option<String>,
+    since: i64,
+) -> Result<(), String> {
+    use crate::session_capture::memory::{init_memories_table, generate_delta_brief};
+
+    let sconn = crate::session_capture::db::open_sessions_db()
+        .map_err(|e| format!("sessions.db not found — run 'imi watch' first: {e}"))?;
+
+    init_memories_table(&sconn)?;
+
+    let env_id = match project {
+        Some(p) => p,
+        None => {
+            let cwd = std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string());
+            crate::session_capture::types::canonical_project(&cwd)
+        }
+    };
+
+    let brief = generate_delta_brief(&sconn, &env_id, None, since)?;
+
+    if out.is_json() {
+        println!("{}", json!({ "ok": true, "brief": brief }));
+    } else {
+        println!("{brief}");
+    }
+    Ok(())
+}
+
+fn cmd_compress_patterns(out: OutputCtx) -> Result<(), String> {
+    use crate::session_capture::memory::{init_memories_table, compress_patterns};
+
+    let sconn = crate::session_capture::db::open_sessions_db()
+        .map_err(|e| format!("sessions.db not found — run 'imi watch' first: {e}"))?;
+
+    init_memories_table(&sconn)?;
+
+    let count = compress_patterns(&sconn)?;
+
+    if out.is_json() {
+        println!("{}", json!({ "ok": true, "patterns_created": count }));
+    } else {
+        println!("Compressed {} pattern(s) into level-2 memories.", count);
+    }
+    Ok(())
+}
+
+fn cmd_hook_handler() -> Result<(), String> {
+    crate::session_capture::hooks::run_hook_handler()
+}
+
 fn extract_output_mode(args: Vec<String>) -> (OutputMode, Vec<String>) {
     let mut mode = OutputMode::Human;
     let mut keep = Vec::with_capacity(args.len());
@@ -1159,7 +1302,6 @@ fn command_key(command: &Commands) -> &'static str {
         Commands::Brief { .. } => "brief",
         Commands::SessionEnd { .. } => "session-end",
         Commands::IndexSessions => "index-sessions",
-        Commands::Wrap { .. } => "wrap",
         Commands::Orchestrate { .. } => "orchestrate",
         Commands::Fail { .. } => "fail",
         Commands::Ping { .. } => "ping",
@@ -1182,6 +1324,11 @@ fn command_key(command: &Commands) -> &'static str {
         Commands::Ops { .. } => "ops",
         Commands::Cancel { .. } => "cancel",
         Commands::Session => "session",
+        Commands::Benchmark { .. } => "benchmark",
+        Commands::DeltaBrief { .. } => "delta-brief",
+        Commands::CompressPatterns => "compress-patterns",
+        Commands::HookHandler => "hook-handler",
+        Commands::Wrap { .. } => "wrap",
     }
 }
 
@@ -1430,6 +1577,127 @@ fn cmd_cancel(
     }
 
     Ok(())
+}
+
+fn cmd_benchmark(out: OutputCtx, action: BenchmarkAction) -> Result<(), String> {
+    match action {
+        BenchmarkAction::Run {
+            mode,
+            runs,
+            seed,
+            memory_injection,
+            score_threshold,
+            output,
+        } => {
+            // Validate mode
+            if mode != "baseline" && mode != "treatment" {
+                return Err("mode must be 'baseline' or 'treatment'".to_string());
+            }
+
+            // Build script path
+            let repo_root = env::current_dir().map_err(|e| format!("cannot get cwd: {e}"))?;
+            let script_path = repo_root.join("scripts").join("benchmark-runner.sh");
+
+            if !script_path.exists() {
+                return Err(format!(
+                    "benchmark script not found: {}",
+                    script_path.display()
+                ));
+            }
+
+            // Build command arguments
+            let mut args = vec![
+                script_path.to_string_lossy().to_string(),
+                "--mode".to_string(),
+                mode.clone(),
+                "--runs".to_string(),
+                runs.to_string(),
+                "--seed".to_string(),
+                seed.to_string(),
+                "--score-threshold".to_string(),
+                score_threshold.to_string(),
+            ];
+
+            if memory_injection {
+                args.push("--memory-injection".to_string());
+            } else {
+                args.push("--no-memory-injection".to_string());
+            }
+
+            if let Some(out_dir) = output {
+                args.push("--output".to_string());
+                args.push(out_dir);
+            }
+
+            if !out.is_json() {
+                println!("Running benchmark campaign: {} mode", mode);
+                println!("  Runs: {}", runs);
+                println!("  Seed: {}", seed);
+                println!("  Memory injection: {}", memory_injection);
+            }
+
+            // Execute script
+            let status = Command::new("bash")
+                .args(&args)
+                .status()
+                .map_err(|e| format!("failed to execute benchmark script: {e}"))?;
+
+            if !status.success() {
+                return Err(format!(
+                    "benchmark script failed with exit code {:?}",
+                    status.code()
+                ));
+            }
+
+            Ok(())
+        }
+        BenchmarkAction::Analyze {
+            baseline_dir,
+            treatment_dir,
+            format,
+            output,
+        } => {
+            // Build script path
+            let repo_root = env::current_dir().map_err(|e| format!("cannot get cwd: {e}"))?;
+            let script_path = repo_root.join("scripts").join("campaign-analysis.sh");
+
+            if !script_path.exists() {
+                return Err(format!(
+                    "analysis script not found: {}",
+                    script_path.display()
+                ));
+            }
+
+            // Build command arguments
+            let mut args = vec![
+                script_path.to_string_lossy().to_string(),
+                baseline_dir,
+                treatment_dir,
+                "--format".to_string(),
+                format,
+            ];
+
+            if let Some(out_file) = output {
+                args.push("--output".to_string());
+                args.push(out_file);
+            }
+
+            // Execute script
+            let status = Command::new("bash")
+                .args(&args)
+                .status()
+                .map_err(|e| format!("failed to execute analysis script: {e}"))?;
+
+            if !status.success() {
+                return Err(format!(
+                    "analysis script failed with exit code {:?}",
+                    status.code()
+                ));
+            }
+
+            Ok(())
+        }
+    }
 }
 
 fn cmd_session(conn: &Connection, out: OutputCtx) -> Result<(), String> {
