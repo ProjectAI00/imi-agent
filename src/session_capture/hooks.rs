@@ -421,7 +421,11 @@ fn truncate_bytes(s: &str, max_bytes: usize) -> String {
 
 /// Read a Claude Code hook event from stdin and return the appropriate
 /// response JSON on stdout.
-pub fn run_hook_handler() -> Result<(), String> {
+///
+/// `cli_event` overrides the JSON-body event_type detection. This is needed
+/// because Claude Code hooks determine event type by which hook array
+/// entry fires the command — the event type is NOT in the JSON body.
+pub fn run_hook_handler(cli_event: Option<&str>) -> Result<(), String> {
     let mut input_str = String::new();
     io::stdin()
         .read_to_string(&mut input_str)
@@ -433,13 +437,17 @@ pub fn run_hook_handler() -> Result<(), String> {
         serde_json::from_str(&input_str).unwrap_or(json!({}))
     };
 
-    // Detect event type from input fields
-    let event_type = input
-        .get("event_type")
-        .or_else(|| input.get("type"))
-        .or_else(|| input.get("hookEvent"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    // CLI arg takes priority over JSON body (Claude Code doesn't send event_type in JSON)
+    let event_type = if let Some(evt) = cli_event {
+        evt
+    } else {
+        input
+            .get("event_type")
+            .or_else(|| input.get("type"))
+            .or_else(|| input.get("hookEvent"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+    };
 
     let event = HookEvent::from_str(event_type);
 

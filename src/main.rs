@@ -495,7 +495,10 @@ enum Commands {
         about = "Handle Claude Code hook events — reads JSON from stdin, outputs response JSON",
         hide = true
     )]
-    HookHandler,
+    HookHandler {
+        /// Hook event type: session_start, session_end, user_prompt_submit, pre_tool_use, post_tool_use, stop
+        event: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -865,7 +868,7 @@ fn dispatch(
         Commands::Benchmark { action } => cmd_benchmark(out, action),
         Commands::DeltaBrief { project, since } => cmd_delta_brief(out, project, since),
         Commands::CompressPatterns => cmd_compress_patterns(out),
-        Commands::HookHandler => cmd_hook_handler(),
+        Commands::HookHandler { event } => cmd_hook_handler(Some(event)),
     }
 }
 
@@ -1266,8 +1269,8 @@ fn cmd_compress_patterns(out: OutputCtx) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_hook_handler() -> Result<(), String> {
-    crate::session_capture::hooks::run_hook_handler()
+fn cmd_hook_handler(event: Option<String>) -> Result<(), String> {
+    crate::session_capture::hooks::run_hook_handler(event.as_deref())
 }
 
 fn extract_output_mode(args: Vec<String>) -> (OutputMode, Vec<String>) {
@@ -1327,7 +1330,7 @@ fn command_key(command: &Commands) -> &'static str {
         Commands::Benchmark { .. } => "benchmark",
         Commands::DeltaBrief { .. } => "delta-brief",
         Commands::CompressPatterns => "compress-patterns",
-        Commands::HookHandler => "hook-handler",
+        Commands::HookHandler { .. } => "hook-handler",
         Commands::Wrap { .. } => "wrap",
     }
 }
