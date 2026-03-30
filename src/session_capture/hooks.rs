@@ -442,7 +442,8 @@ pub fn run_hook_handler(cli_event: Option<&str>) -> Result<(), String> {
         evt
     } else {
         input
-            .get("event_type")
+            .get("hook_event_name")  // Claude Code v1.0.27+ sends this
+            .or_else(|| input.get("event_type"))
             .or_else(|| input.get("type"))
             .or_else(|| input.get("hookEvent"))
             .and_then(|v| v.as_str())
