@@ -1,7 +1,7 @@
 {
   "name": "imi-agent",
   "version": "0.3.21",
-  "description": "IMI — the persistent brain for AI agents. One command to install and initialize.",
+  "description": "IMI — persistent ops layer for AI agents. Goals, tasks, and decisions that survive every session.",
   "bin": {
     "imi": "./run.ts"
   },
