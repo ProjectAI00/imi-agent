@@ -68,27 +68,14 @@ async function main(): Promise<void> {
 
   // Install hankweave (execution engine)
   try {
-    execSync("hankweave --version 2>/dev/null || bunx hankweave --version 2>/dev/null", { stdio: "pipe" });
+    execSync("hankweave --version 2>/dev/null || bunx hankweave --version 2>/dev/null", { stdio: "pipe", timeout: 5000 });
   } catch {
     process.stdout.write("Installing hankweave... ");
     try {
-      execSync("npm install -g hankweave", { stdio: "pipe" });
+      execSync("npm install -g hankweave", { stdio: "pipe", timeout: 30000 });
       console.log("done");
     } catch {
       console.log("skipped (install manually: npm install -g hankweave)");
-    }
-  }
-
-  // Install entire (commit tracking + session verification)
-  try {
-    execSync("entire version", { stdio: "pipe" });
-  } catch {
-    process.stdout.write("Installing entire... ");
-    try {
-      execSync("curl -fsSL https://entire.io/install.sh | bash", { stdio: "pipe", shell: true });
-      console.log("done");
-    } catch {
-      console.log("skipped (install manually: curl -fsSL https://entire.io/install.sh | bash)");
     }
   }
 
@@ -193,7 +180,7 @@ function registerClaudePlugin(): void {
     try {
       execSync(
         `git clone --depth 1 https://github.com/ProjectAI00/imi-agent "${installLocation}"`,
-        { stdio: "pipe" }
+        { stdio: "pipe", timeout: 15000 }
       );
     } catch {
       // git unavailable or no network — register the source URL anyway
