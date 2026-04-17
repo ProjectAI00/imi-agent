@@ -381,3 +381,16 @@ Continue the conversation from where it left off without asking the user any fur
 ---
 
 okay push the change to the main and directly to github actions as well..
+
+---
+
+pdate(npm/package.json)                                                                                                                            
+  ⎿  Added 1 line, removed 1 line                                                                                                                     
+      1  {                                                                                                                                            
+      2    "name": "imi-agent",                                                                                                                       
+      3 -  "version": "0.3.20",                                                                                                                       
+      3 +  "version": "0.3.21",                                                                                                                       
+      4    "description": "IMI — the persistent brain for AI agents. One command to install and initialize.",                                     
+      5    "bin": {                                            
+      6      "imi": "./run.ts"                                                                                                                        
+                                 change the description a bit if possible. tnx.
