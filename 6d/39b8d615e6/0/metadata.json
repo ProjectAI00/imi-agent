@@ -1,0 +1,48 @@
+{
+  "cli_version": "0.4.2",
+  "checkpoint_id": "6d39b8d615e6",
+  "session_id": "2d147115-b0d3-4e5c-b5a7-f6e44c286409",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-17T18:16:52.733891Z",
+  "branch": "main",
+  "checkpoints_count": 4,
+  "files_touched": [
+    ".fastembed_cache/models--Xenova--bge-small-en-v1.5/blobs/0c4d86248983ce46dfc09a9091b6f56bb0224550",
+    ".fastembed_cache/models--Xenova--bge-small-en-v1.5/blobs/0c4d86248983ce46dfc09a9091b6f56bb0224550.lock",
+    ".fastembed_cache/models--Xenova--bge-small-en-v1.5/blobs/37fca74771bc76a8e01178ce3a6055a0995f8093",
+    ".fastembed_cache/models--Xenova--bge-small-en-v1.5/blobs/37fca74771bc76a8e01178ce3a6055a0995f8093.lock",
+    ".fastembed_cache/models--Xenova--bge-small-en-v1.5/blobs/688882a79f44442ddc1f60d70334a7ff5df0fb47",
+    ".fastembed_cache/models--Xenova--bge-small-en-v1.5/blobs/688882a79f44442ddc1f60d70334a7ff5df0fb47.lock",
+    ".fastembed_cache/models--Xenova--bge-small-en-v1.5/blobs/828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35",
+    ".fastembed_cache/models--Xenova--bge-small-en-v1.5/blobs/828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35.lock",
+    ".fastembed_cache/models--Xenova--bge-small-en-v1.5/blobs/a8b3208c2884c4efb86e49300fdd3dc877220cdf",
+    ".fastembed_cache/models--Xenova--bge-small-en-v1.5/blobs/a8b3208c2884c4efb86e49300fdd3dc877220cdf.lock",
+    ".fastembed_cache/models--Xenova--bge-small-en-v1.5/refs/main",
+    ".fastembed_cache/models--Xenova--bge-small-en-v1.5/snapshots/ea104dacec62c0de699686887e3f920caeb4f3e3/config.json",
+    ".fastembed_cache/models--Xenova--bge-small-en-v1.5/snapshots/ea104dacec62c0de699686887e3f920caeb4f3e3/onnx/model.onnx",
+    ".fastembed_cache/models--Xenova--bge-small-en-v1.5/snapshots/ea104dacec62c0de699686887e3f920caeb4f3e3/special_tokens_map.json",
+    ".fastembed_cache/models--Xenova--bge-small-en-v1.5/snapshots/ea104dacec62c0de699686887e3f920caeb4f3e3/tokenizer.json",
+    ".fastembed_cache/models--Xenova--bge-small-en-v1.5/snapshots/ea104dacec62c0de699686887e3f920caeb4f3e3/tokenizer_config.json",
+    "Cargo.toml",
+    "npm/package.json",
+    "npm/run.ts"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "cc4a9b59-719e-4066-8dd8-38159433d71d",
+  "token_usage": {
+    "input_tokens": 11254,
+    "cache_creation_tokens": 2115105,
+    "cache_read_tokens": 12460098,
+    "output_tokens": 65679,
+    "api_call_count": 152
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-17T18:16:52.642902Z",
+    "agent_lines": 0,
+    "human_added": 0,
+    "human_modified": 67785,
+    "human_removed": 5673,
+    "total_committed": 55781,
+    "agent_percentage": 0
+  }
+}
