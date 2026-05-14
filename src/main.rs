@@ -1,5 +1,5 @@
 use clap::{CommandFactory, Parser, Subcommand};
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, types::ValueRef, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde_json::{json, Value};
 use std::env;
 use std::fs::{self, File};
@@ -1315,7 +1315,7 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
             )
             .map_err(|e| e.to_string())?;
         let mapped = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, row_ts(r, 2)?)))
             .map_err(|e| e.to_string())?;
         mapped
             .collect::<Result<Vec<_>, _>>()
@@ -1335,7 +1335,7 @@ fn cmd_context(conn: &Connection, out: OutputCtx, goal_id: Option<String>) -> Re
             )
             .map_err(|e| e.to_string())?;
         let mapped = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, row_ts(r, 3)?)))
             .map_err(|e| e.to_string())?;
         mapped
             .collect::<Result<Vec<_>, _>>()
@@ -1740,7 +1740,7 @@ fn cmd_next(
                     .map_err(|e| e.to_string())?;
                 let mapped = stmt
                     .query_map(params![format!("%{}%", g.name)], |r| {
-                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, row_ts(r, 3)?))
                     })
                     .map_err(|e| e.to_string())?;
                 mapped
@@ -1792,7 +1792,7 @@ fn cmd_next(
                         .map_err(|e| e.to_string())?;
                     let rows: Vec<(String, String, String, i64)> = stmt
                         .query_map(params![gid, task.id.clone()], |r| {
-                            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                            Ok((r.get(0)?, r.get(1)?, r.get(2)?, row_ts(r, 3)?))
                         })
                         .map_err(|e| e.to_string())?
                         .collect::<Result<Vec<_>, _>>()
@@ -1819,7 +1819,7 @@ fn cmd_next(
                         .map_err(|e| e.to_string())?;
                     let pattern = format!("%{}%", goal_name);
                     let rows: Vec<(String, String, String, i64)> = stmt
-                        .query_map(params![pattern], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                        .query_map(params![pattern], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, row_ts(r, 3)?)))
                         .map_err(|e| e.to_string())?
                         .collect::<Result<Vec<_>, _>>()
                         .map_err(|e| e.to_string())?;
@@ -2339,7 +2339,7 @@ fn build_task_context(conn: &Connection, db_path: &Path, task_id: &str) -> Resul
              WHERE t.goal_id=?1 AND m.key='completion_summary' AND COALESCE(m.task_id,'') != ?2
              ORDER BY COALESCE(m.created_at,0) DESC LIMIT 3",
         ).map_err(|e| e.to_string())?;
-        let rows: Vec<(String, String, String, i64)> = stmt.query_map(params![task.7.clone(), task.0.clone()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        let rows: Vec<(String, String, String, i64)> = stmt.query_map(params![task.7.clone(), task.0.clone()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, row_ts(r, 3)?)))
             .map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
         rows
     };
@@ -3727,7 +3727,7 @@ fn get_goals(conn: &Connection) -> Result<Vec<GoalRow>, String> {
             success_signal: r.get(5)?,
             status: r.get(6)?,
             priority: r.get(7)?,
-            created_at: r.get(8)?,
+            created_at: row_ts(r, 8)?,
         })
     })
     .map_err(|e| e.to_string())?;
@@ -3752,7 +3752,7 @@ fn get_goal(conn: &Connection, id: &str) -> Result<Option<GoalRow>, String> {
                 success_signal: r.get(5)?,
                 status: r.get(6)?,
                 priority: r.get(7)?,
-                created_at: r.get(8)?,
+                created_at: row_ts(r, 8)?,
             })
         },
     )
@@ -3778,7 +3778,7 @@ fn get_tasks_for_goal(conn: &Connection, goal_id: &str) -> Result<Vec<TaskRow>, 
             status: r.get(5)?,
             priority: r.get(6)?,
             agent_id: r.get(7)?,
-            created_at: r.get(8)?,
+            created_at: row_ts(r, 8)?,
         })
     })
     .map_err(|e| e.to_string())?;
@@ -3801,7 +3801,7 @@ fn query_direction(
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     if let Some(s) = since {
         let mapped = stmt
-            .query_map(params![s, limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .query_map(params![s, limit], |r| Ok((r.get(0)?, r.get(1)?, row_ts(r, 2)?)))
             .map_err(|e| e.to_string())?;
         let rows = mapped
             .collect::<Result<Vec<_>, _>>()
@@ -3809,7 +3809,7 @@ fn query_direction(
         Ok(rows)
     } else {
         let mapped = stmt
-            .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?, row_ts(r, 2)?)))
             .map_err(|e| e.to_string())?;
         let rows = mapped
             .collect::<Result<Vec<_>, _>>()
@@ -3825,7 +3825,7 @@ fn query_decisions(conn: &Connection, limit: i64) -> Result<Vec<(String, String,
         )
         .map_err(|e| e.to_string())?;
     let mapped = stmt
-        .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, row_ts(r, 3)?)))
         .map_err(|e| e.to_string())?;
     let rows = mapped
         .collect::<Result<Vec<_>, _>>()
@@ -3858,7 +3858,7 @@ fn query_active_goals(conn: &Connection, limit: i64) -> Result<Vec<GoalRow>, Str
             success_signal: r.get(5)?,
             status: r.get(6)?,
             priority: r.get(7)?,
-            created_at: r.get(8)?,
+            created_at: row_ts(r, 8)?,
         })
     })
     .map_err(|e| e.to_string())?;
@@ -3889,7 +3889,7 @@ fn query_wip_tasks(conn: &Connection, limit: i64) -> Result<Vec<TaskRowWithGoal>
             status: r.get(5)?,
             priority: r.get(6)?,
             agent_id: r.get(7)?,
-            created_at: r.get(8)?,
+            created_at: row_ts(r, 8)?,
             goal_name: Some(r.get(9)?),
         })
     })
@@ -3936,7 +3936,7 @@ fn query_memories(conn: &Connection, goal_id: Option<&str>, limit: i64) -> Resul
                 value: r.get(4)?,
                 typ: r.get(5)?,
                 source: r.get(6)?,
-                created_at: r.get(7)?,
+                created_at: row_ts(r, 7)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -3954,7 +3954,7 @@ fn query_memories(conn: &Connection, goal_id: Option<&str>, limit: i64) -> Resul
                 value: r.get(4)?,
                 typ: r.get(5)?,
                 source: r.get(6)?,
-                created_at: r.get(7)?,
+                created_at: row_ts(r, 7)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -3981,7 +3981,7 @@ fn query_lessons(conn: &Connection, limit: i64) -> Result<Vec<LessonRow>, String
                 what_went_wrong: r.get(1)?,
                 correct_behavior: r.get(2)?,
                 verified_by: r.get(3)?,
-                created_at: r.get(4)?,
+                created_at: row_ts(r, 4)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -4019,7 +4019,7 @@ fn query_active_memories(conn: &Connection, limit: i64) -> Result<Vec<MemoryRow>
                 value: r.get(4)?,
                 typ: r.get(5)?,
                 source: r.get(6)?,
-                created_at: r.get(7)?,
+                created_at: row_ts(r, 7)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -4046,7 +4046,7 @@ fn resolve_task(conn: &Connection, prefix: &str) -> Result<TaskRow, String> {
                 status: r.get(5)?,
                 priority: r.get(6)?,
                 agent_id: r.get(7)?,
-                created_at: r.get(8)?,
+                created_at: row_ts(r, 8)?,
             })
         },
     )
@@ -4262,6 +4262,81 @@ fn now_ts() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+fn row_ts(row: &Row<'_>, idx: usize) -> rusqlite::Result<i64> {
+    match row.get_ref(idx)? {
+        ValueRef::Null => Ok(0),
+        ValueRef::Integer(v) => Ok(v),
+        ValueRef::Real(v) => Ok(v as i64),
+        ValueRef::Text(bytes) => {
+            let s = std::str::from_utf8(bytes).unwrap_or("").trim();
+            Ok(parse_ts_text(s))
+        }
+        ValueRef::Blob(_) => Ok(0),
+    }
+}
+
+fn parse_ts_text(s: &str) -> i64 {
+    if s.is_empty() {
+        return 0;
+    }
+    if let Ok(v) = s.parse::<i64>() {
+        return v;
+    }
+
+    let bytes = s.as_bytes();
+    if bytes.len() < 10 || bytes.get(4) != Some(&b'-') || bytes.get(7) != Some(&b'-') {
+        return 0;
+    }
+
+    let Some(year) = parse_ascii_i32(&bytes[0..4]) else { return 0 };
+    let Some(month) = parse_ascii_i32(&bytes[5..7]) else { return 0 };
+    let Some(day) = parse_ascii_i32(&bytes[8..10]) else { return 0 };
+
+    let (hour, minute, second) = if bytes.len() >= 19 && (bytes[10] == b' ' || bytes[10] == b'T') {
+        let Some(hour) = parse_ascii_i32(&bytes[11..13]) else { return 0 };
+        let Some(minute) = parse_ascii_i32(&bytes[14..16]) else { return 0 };
+        let Some(second) = parse_ascii_i32(&bytes[17..19]) else { return 0 };
+        (hour, minute, second)
+    } else {
+        (0, 0, 0)
+    };
+
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=60).contains(&second)
+    {
+        return 0;
+    }
+
+    days_from_civil(year, month, day) * 86_400
+        + (hour as i64) * 3_600
+        + (minute as i64) * 60
+        + second as i64
+}
+
+fn parse_ascii_i32(bytes: &[u8]) -> Option<i32> {
+    let mut value = 0i32;
+    for b in bytes {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        value = value * 10 + i32::from(b - b'0');
+    }
+    Some(value)
+}
+
+fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
+    let year = year - if month <= 2 { 1 } else { 0 };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month_prime = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    i64::from(era * 146_097 + day_of_era - 719_468)
 }
 
 fn ago(ts: i64) -> String {

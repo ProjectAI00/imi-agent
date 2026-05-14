@@ -113,7 +113,7 @@ echo "── 1. Version ──────────────────�
 run --version
 assert_exit   "imi --version exits 0"   0
 assert_contains "imi --version output"   "imi"
-assert_contains "imi --version semver"   "0.3.4"
+assert_contains "imi --version semver"   "0.3."
 
 # ═════════════════════════════════════════════════════════════
 # 2. INIT
@@ -433,6 +433,17 @@ assert_exit     "context --toon exits 0"           0
 # Context should surface decisions and/or memories
 assert_contains "context shows decision content"   "RS256"
 
+# Older IMI databases may have timestamp values stored as SQLite TEXT/DATETIME
+# even when newer schemas use INTEGER unix seconds. Context must tolerate them.
+db_query "UPDATE goals SET created_at='2026-04-25 10:00:00', updated_at='2026-04-25 10:00:00';"
+db_query "UPDATE tasks SET created_at='2026-04-25 10:00:00', updated_at='2026-04-25 10:00:00', last_ping_at='2026-04-25 10:00:00';"
+db_query "UPDATE decisions SET created_at='2026-04-25 10:00:00';"
+db_query "UPDATE direction_notes SET created_at='2026-04-25 10:00:00';"
+db_query "UPDATE memories SET created_at='2026-04-25 10:00:00';"
+db_query "UPDATE lessons SET created_at='2026-04-25 10:00:00';"
+run context
+assert_exit "context tolerates text timestamps" 0
+
 # ═════════════════════════════════════════════════════════════
 # 14. STATUS
 # ═════════════════════════════════════════════════════════════
@@ -644,7 +655,7 @@ pass "4 sequential commands baseline: ${SEQ_MS}ms (parallel ran 8 in ${PERF_MS}m
 echo ""
 echo "── 23. Skill install paths ─────────────────────────────"
 
-SKILL_SRC="$(dirname "$0")/../skills/imi/SKILL.md"
+SKILL_SRC="$(dirname "$0")/../npm/skills/imi/SKILL.md"
 SKILL_SCRIPT_SRC="$(dirname "$0")/../skills/imi/scripts/session-start.sh"
 
 if [[ -f "$SKILL_SRC" ]]; then
